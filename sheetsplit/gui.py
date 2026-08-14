@@ -527,8 +527,13 @@ def main(argv=None) -> int:
     _enable_dpi_awareness()
     argv = list(sys.argv[1:] if argv is None else argv)
     root = tk.Tk()
-    root.geometry("1180x780")
-    root.minsize(940, 600)
+    # Never open wider than the screen: on a 1024x768 display the preferred size
+    # puts Settings and Open folder off the right-hand edge, where nobody can
+    # reach them.
+    width = max(820, min(1180, root.winfo_screenwidth() - 80))
+    height = max(560, min(780, root.winfo_screenheight() - 120))
+    root.geometry(f"{width}x{height}")
+    root.minsize(min(940, width), min(600, height))
     App(root, argv)
     _apply_window_chrome(root)
     root.mainloop()

@@ -60,6 +60,18 @@ and compression, and for every sheet how many blobs were found, how many were
 dropped for being too small, how many were inside another piece, and how many
 became files.
 
+## On a Mac
+
+`Sheet Splitter.app` does the same job. Pieces go to `~/Sheet Pieces/`.
+
+⚠ **A copy downloaded from the releases page is quarantined by macOS** and will
+say it's damaged rather than that it's unsigned. Clear it once:
+
+    xattr -dr com.apple.quarantine "/Applications/Sheet Splitter.app"
+
+A copy handed over locally rather than downloaded doesn't carry the flag and
+just opens.
+
 ## Running it from a command line
 
 ```
