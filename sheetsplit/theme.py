@@ -1,0 +1,178 @@
+"""Big Tee brand surface for a Tk window.
+
+The rules come from CaludeJOb/docs/design-guidelines.md, which is the one home
+for them. The two that matter most here:
+
+  * The pink is #ec4899 and is not open to being re-picked.
+  * ⚠ Never white ink on that pink -- near-black measures 5.35:1, white 3.53:1,
+    against AA's 4.5. Every pink surface in this app carries near-black text.
+
+Pink also means "the one main action". Choosing sheets is that action, so it is
+the only pink control on the window.
+"""
+
+from __future__ import annotations
+
+import sys
+import tkinter as tk
+from tkinter import ttk
+
+PINK = "#ec4899"
+PINK_DARK = "#c63c81"
+NEAR_BLACK = "#0a0a0a"
+
+WINDOW = "#171717"        # neutral-900
+PANEL = "#1f1f1f"
+SUNKEN = "#111111"
+BORDER = "#404040"        # neutral-700
+BORDER_SOFT = "#262626"   # neutral-800
+
+INK = "#f5f5f5"           # neutral-100
+MUTED = "#a3a3a3"         # neutral-400
+RED = "#f87171"           # red-400, never red-600 on a dark surface
+AMBER = "#fbbf24"
+
+UI_FONT = "Segoe UI" if sys.platform == "win32" else "Helvetica Neue"
+
+
+def font(size=10, weight="normal"):
+    return (UI_FONT, size, weight)
+
+
+def apply(root: tk.Misc) -> ttk.Style:
+    """clam on every platform: the native Windows theme silently ignores most
+    colour options, which would leave half the window light grey."""
+    style = ttk.Style(root)
+    style.theme_use("clam")
+
+    style.configure(".", background=WINDOW, foreground=INK, font=font())
+    style.configure("TFrame", background=WINDOW)
+    style.configure("Panel.TFrame", background=PANEL)
+    style.configure("TLabel", background=WINDOW, foreground=INK)
+    style.configure("Muted.TLabel", background=WINDOW, foreground=MUTED)
+    style.configure("Title.TLabel", background=WINDOW, foreground=INK,
+                    font=font(15, "bold"))
+    style.configure("Warn.TLabel", background=WINDOW, foreground=AMBER)
+    style.configure("Error.TLabel", background=WINDOW, foreground=RED)
+
+    style.configure("TCheckbutton", background=WINDOW, foreground=MUTED,
+                    focuscolor=WINDOW)
+    style.map("TCheckbutton",
+              background=[("active", WINDOW)],
+              foreground=[("active", INK)],
+              indicatorcolor=[("selected", PINK), ("!selected", BORDER)])
+
+    style.configure("TEntry", fieldbackground=SUNKEN, foreground=INK,
+                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
+                    insertcolor=INK, padding=6)
+    style.map("TEntry", bordercolor=[("focus", PINK)])
+
+    style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
+                    foreground=INK, bordercolor=BORDER_SOFT, rowheight=30,
+                    font=font())
+    style.configure("Treeview.Heading", background=WINDOW, foreground=MUTED,
+                    relief="flat", font=font(9, "bold"), padding=(8, 6))
+    style.map("Treeview.Heading", background=[("active", WINDOW)])
+    style.map("Treeview",
+              background=[("selected", PINK)],
+              foreground=[("selected", NEAR_BLACK)])  # ⚠ never white on pink
+
+    style.configure("TPanedwindow", background=WINDOW)
+    style.configure("Sash", sashthickness=8, gripcount=0)
+
+    style.configure("Brand.Horizontal.TProgressbar", troughcolor=SUNKEN,
+                    bordercolor=SUNKEN, background=PINK, lightcolor=PINK,
+                    darkcolor=PINK, thickness=6)
+
+    style.configure("TScrollbar", background=PANEL, troughcolor=WINDOW,
+                    bordercolor=WINDOW, arrowcolor=MUTED)
+    style.map("TScrollbar", background=[("active", BORDER)])
+    return style
+
+
+class Button(tk.Canvas):
+    """A rounded slab, because ttk cannot round a corner.
+
+    Variants are roles, not colours -- `primary` is THE one main action on the
+    window and nothing else is pink; everything else is `secondary`, the
+    bordered base button.
+    """
+
+    def __init__(self, parent, text, command=None, variant="secondary",
+                 pad=(16, 9), radius=6, bg=WINDOW):
+        self.variant, self.radius, self.canvas_bg = variant, radius, bg
+        self._font = font(10, "bold" if variant == "primary" else "normal")
+        self.text, self.command = text, command
+        self._enabled, self._hover, self._pressed = True, False, False
+
+        probe = tk.Label(parent, text=text, font=self._font)
+        w = probe.winfo_reqwidth() + pad[0] * 2
+        h = probe.winfo_reqheight() + pad[1] * 2
+        probe.destroy()
+
+        super().__init__(parent, width=w, height=h, highlightthickness=0,
+                         bg=bg, cursor="hand2" if command else "arrow")
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self._draw()
+
+    # -- painting
+
+    def _round_points(self, x0, y0, x1, y1, r):
+        return [
+            x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+            x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+        ]
+
+    def _colours(self):
+        if not self._enabled:
+            return PANEL, BORDER_SOFT, MUTED
+        if self.variant == "primary":
+            fill = PINK_DARK if self._pressed else PINK
+            # ⚠ near-black on pink, measured. Not white, ever.
+            return fill, fill, NEAR_BLACK
+        fill = PANEL if (self._hover or self._pressed) else self.canvas_bg
+        return fill, BORDER, INK
+
+    def _draw(self):
+        self.delete("all")
+        w, h = int(self["width"]), int(self["height"])
+        fill, outline, ink = self._colours()
+        self.create_polygon(self._round_points(1, 1, w - 1, h - 1, self.radius),
+                            smooth=True, splinesteps=24, fill=fill,
+                            outline=outline, width=1)
+        self.create_text(w // 2, h // 2, text=self.text, fill=ink,
+                         font=self._font)
+
+    # -- state
+
+    def enable(self, on: bool = True):
+        self._enabled = on
+        self.configure(cursor="hand2" if on and self.command else "arrow")
+        self._draw()
+
+    def set_text(self, text: str):
+        self.text = text
+        self._draw()
+
+    def _on_enter(self, _e):
+        self._hover = True
+        self._draw()
+
+    def _on_leave(self, _e):
+        self._hover = self._pressed = False
+        self._draw()
+
+    def _on_press(self, _e):
+        if self._enabled:
+            self._pressed = True
+            self._draw()
+
+    def _on_release(self, _e):
+        was = self._pressed
+        self._pressed = False
+        self._draw()
+        if was and self._enabled and self.command:
+            self.command()

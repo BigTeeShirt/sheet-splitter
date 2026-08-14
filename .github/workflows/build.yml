@@ -1,0 +1,70 @@
+name: Build Windows app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller==6.11.1
+
+      # Proves the split itself still works before anything is packaged: a
+      # synthetic sheet with a known number of pieces, plus specks and inside
+      # labels that must NOT become files.
+      - name: Smoke test the splitter
+        run: |
+          python tools/make_test_sheet.py test-sheet/Synthetic-Pattern-M.tif --inches 20x30 --pieces 12
+          python -m sheetsplit.cli test-sheet/Synthetic-Pattern-M.tif --out out
+          python tools/check_split.py out/Synthetic-Pattern-M 12
+
+      - name: Build the exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name "Sheet Splitter"
+          --icon sheetsplit/assets/icon.ico
+          --add-data "sheetsplit/assets;assets"
+          --exclude-module matplotlib --exclude-module pytest
+          sheet_splitter.py
+
+      # Launch the real exe on a real desktop and photograph it. This is the
+      # only place the window can be looked at before it reaches the shop.
+      - name: Screenshot the app
+        shell: powershell
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "resolution unchanged" }
+          $sheet = Resolve-Path "test-sheet\Synthetic-Pattern-M.tif"
+          Start-Process ".\dist\Sheet Splitter.exe" -ArgumentList "`"$sheet`""
+          Start-Sleep -Seconds 30
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bmp.Size)
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          $bmp.Save("$PWD\shots\app.png", [System.Drawing.Imaging.ImageFormat]::Png)
+          Write-Host "captured $($bounds.Width)x$($bounds.Height)"
+          Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sheet-splitter-windows
+          path: dist/Sheet Splitter.exe
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot
+          path: shots/app.png
