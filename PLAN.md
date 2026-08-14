@@ -93,11 +93,23 @@ C:\Sheet Pieces\Deluzion-Jersey-L\
 
 ## Build and delivery
 
-Python + **libvips** (streams, handles CMYK/ICC properly, parallel strip
-decode), packaged with PyInstaller into one exe by a **GitHub Actions Windows
-runner** — built on real Windows, not cross-guessed from a Mac. The same runner
-splits a synthetic sheet on every build, so the exe is proven before download.
-Download from the repo's releases page.
+Python + **Pillow, numpy and scipy**, packaged with PyInstaller into one exe by
+a **GitHub Actions Windows runner** — built on real Windows, not cross-guessed
+from a Mac. Download from the repo's releases page.
+
+libvips was the plan and was dropped: it has no usable install on this Mac and
+would have meant wrestling a native library into the bundle. With 16GB and a
+2GB ceiling on sheets, decompressing once into memory is comfortable —
+**measured 1.9GB peak for a 435-megapixel sheet** — and it removed the only
+packaging risk that had no upside.
+
+⚠ **The build must prove the exe runs, not just that it built.** The first two
+green builds shipped an exe that died on launch with "Importing the numpy
+C-extensions failed" — PyInstaller misses numpy's and scipy's compiled
+submodules and says nothing, so `--collect-all` is load-bearing. CI now starts
+the real exe on the runner's desktop, photographs the window, and fails unless
+the app is still alive and has written twelve checked pieces. That screenshot
+is also the only way to look at a Windows UI from a Mac.
 
 **SmartScreen will warn once** on an unsigned exe ("More info → Run anyway").
 Signing costs a few hundred a year; not worth it for an in-shop tool.
