@@ -395,8 +395,17 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
             on_step(text, frac)
 
     try:
+        prior = existing_split(root, sheet)
+        if prior and not s.skip_existing:
+            # Deliberately splitting it again: replace the old folder rather than
+            # leaving a "(2)" beside it for someone to pick the wrong one from.
+            old = Path(prior.get("folder", ""))
+            try:
+                if old.exists() and old.resolve().parent == root.resolve():
+                    shutil.rmtree(old)
+            except Exception as exc:
+                log.warning("could not replace %s: %s", old, exc)
         if s.skip_existing:
-            prior = existing_split(root, sheet)
             if prior:
                 res.ok, res.skipped = True, True
                 res.folder, res.preview = prior.get("folder", ""), prior.get("preview", "")

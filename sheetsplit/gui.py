@@ -257,6 +257,11 @@ class App(ttk.Frame):
         self.detail = ttk.Label(wrap, text="", wraplength=560, justify="left",
                                 style="Warn.TLabel")
         self.detail.pack(fill="x", pady=(10, 0))
+        # Finished sizes, so a piece cropped wrong is obvious as a number as
+        # well as a picture.
+        self.sizes = ttk.Label(wrap, text="", wraplength=560, justify="left",
+                               style="Muted.TLabel")
+        self.sizes.pack(fill="x", pady=(6, 0))
         return wrap
 
     # ---------------------------------------------------------------- actions
@@ -312,6 +317,7 @@ class App(ttk.Frame):
         self.tree.delete(*self.tree.get_children())
         self.canvas.delete("all")
         self.detail.config(text="")
+        self.sizes.config(text="")
         self.open_btn.enable(False)
         self.cancel_btn.enable(True)
         self.cancel_flag.clear()
@@ -434,10 +440,20 @@ class App(ttk.Frame):
                          "Untick “skip sheets already split” to do it again.")
         self.detail.config(text="\n".join(notes),
                            style="Error.TLabel" if not r.ok else "Warn.TLabel")
+        self.sizes.config(text=self._sizes_text(r))
         self.open_btn.enable(bool(r.folder))
         self._draw_preview(r.preview)
 
-    def _canvas_resized(self, _event):
+    @staticmethod
+    def _sizes_text(r: core.SheetResult) -> str:
+        if not r.pieces:
+            return ""
+        parts = [f"{p.index} · {p.width_in:g}×{p.height_in:g}" for p in r.pieces]
+        return "Finished sizes in inches   " + "     ".join(parts)
+
+    def _canvas_resized(self, event):
+        for label in (self.detail, self.sizes):
+            label.config(wraplength=max(200, event.width - 8))
         if self._resize_job:
             self.after_cancel(self._resize_job)
         self._resize_job = self.after(
