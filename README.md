@@ -44,7 +44,21 @@ Everything worth adjusting is under **Settings**:
 | Margin outside the line | Cut line looks tight against the edge of a piece. |
 | Delete pieces after | 0 keeps them forever. |
 
-There's a log at `C:\Sheet Pieces\sheet-splitter.log`.
+### When it needs looking at from somewhere else
+
+**Save diagnostics** writes one zip holding the log, the current settings, and
+for each sheet in the batch its numbered preview *and the ink mask the splitter
+actually worked from* — which is usually the thing that explains a bad split.
+It never includes the sheets themselves.
+
+Set **Send diagnostics to** in Settings to a Synology-synced folder and the zip
+lands somewhere it can be read without anyone emailing a file around.
+
+The rolling log lives at `C:\Sheet Pieces\sheet-splitter.log`. It records the
+app version, the machine, free disk, each sheet's dimensions, colour mode, DPI
+and compression, and for every sheet how many blobs were found, how many were
+dropped for being too small, how many were inside another piece, and how many
+became files.
 
 ## Running it from a command line
 

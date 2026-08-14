@@ -27,6 +27,7 @@ SUNKEN = "#111111"
 BORDER = "#404040"        # neutral-700
 BORDER_SOFT = "#262626"   # neutral-800
 
+SELECTED = "#33333a"      # a lifted row, not a pink slab
 INK = "#f5f5f5"           # neutral-100
 MUTED = "#a3a3a3"         # neutral-400
 RED = "#f87171"           # red-400, never red-600 on a dark surface
@@ -55,12 +56,18 @@ def apply(root: tk.Misc) -> ttk.Style:
     style.configure("Warn.TLabel", background=WINDOW, foreground=AMBER)
     style.configure("Error.TLabel", background=WINDOW, foreground=RED)
 
+    # clam names these indicatorbackground/indicatorforeground; setting
+    # `indicatorcolor` (the name other themes use) silently does nothing and
+    # leaves a light box with a smudge in it that reads as a cross, not a tick.
     style.configure("TCheckbutton", background=WINDOW, foreground=MUTED,
-                    focuscolor=WINDOW)
+                    focuscolor=WINDOW, indicatorbackground=SUNKEN,
+                    indicatorforeground=NEAR_BLACK, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER, indicatormargin=(0, 0, 8, 0))
     style.map("TCheckbutton",
               background=[("active", WINDOW)],
               foreground=[("active", INK)],
-              indicatorcolor=[("selected", PINK), ("!selected", BORDER)])
+              indicatorbackground=[("selected", PINK), ("!selected", SUNKEN)],
+              indicatorforeground=[("selected", NEAR_BLACK)])  # ⚠ never white on pink
 
     style.configure("TEntry", fieldbackground=SUNKEN, foreground=INK,
                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
@@ -69,13 +76,15 @@ def apply(root: tk.Misc) -> ttk.Style:
 
     style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
                     foreground=INK, bordercolor=BORDER_SOFT, rowheight=30,
-                    font=font())
+                    font=font(), lightcolor=BORDER_SOFT, darkcolor=BORDER_SOFT)
     style.configure("Treeview.Heading", background=WINDOW, foreground=MUTED,
                     relief="flat", font=font(9, "bold"), padding=(8, 6))
     style.map("Treeview.Heading", background=[("active", WINDOW)])
+    # A selected row is NOT pink. Pink is the one main action, and a full-width
+    # pink slab beside a pink button means neither of them is the main thing.
     style.map("Treeview",
-              background=[("selected", PINK)],
-              foreground=[("selected", NEAR_BLACK)])  # ⚠ never white on pink
+              background=[("selected", SELECTED)],
+              foreground=[("selected", INK)])
 
     style.configure("TPanedwindow", background=WINDOW)
     style.configure("Sash", sashthickness=8, gripcount=0)
@@ -84,9 +93,16 @@ def apply(root: tk.Misc) -> ttk.Style:
                     bordercolor=SUNKEN, background=PINK, lightcolor=PINK,
                     darkcolor=PINK, thickness=6)
 
-    style.configure("TScrollbar", background=PANEL, troughcolor=WINDOW,
-                    bordercolor=WINDOW, arrowcolor=MUTED)
-    style.map("TScrollbar", background=[("active", BORDER)])
+    # clam draws a scrollbar's frame from lightcolor/darkcolor as well as
+    # bordercolor; leaving those unset puts a white outline and pale arrows on
+    # an otherwise dark window. Vertical.* explicitly -- the base name alone
+    # does not reach it.
+    for name in ("TScrollbar", "Vertical.TScrollbar", "Horizontal.TScrollbar"):
+        style.configure(name, background=BORDER, troughcolor=SUNKEN,
+                        bordercolor=SUNKEN, lightcolor=SUNKEN, darkcolor=SUNKEN,
+                        arrowcolor=MUTED, relief="flat", borderwidth=0)
+        style.map(name, background=[("active", MUTED)],
+                  arrowcolor=[("active", INK)])
     return style
 
 

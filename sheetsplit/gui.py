@@ -468,8 +468,11 @@ class App(ttk.Frame):
     def _sizes_text(r: core.SheetResult) -> str:
         if not r.pieces:
             return ""
-        parts = [f"{p.index} · {p.width_in:g}×{p.height_in:g}" for p in r.pieces]
-        return "Finished sizes in inches   " + "     ".join(parts)
+        # Non-breaking spaces inside an entry, ordinary ones between them, so a
+        # wrap never splits "7 · 5.05×5.15" across two lines.
+        parts = [f"{p.index} · {p.width_in:.2f}×{p.height_in:.2f}"
+                 for p in r.pieces]
+        return "Finished sizes in inches    " + "     ".join(parts)
 
     def _canvas_resized(self, event):
         for label in (self.detail, self.sizes):
