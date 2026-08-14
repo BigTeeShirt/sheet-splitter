@@ -53,6 +53,29 @@ def _enable_dpi_awareness() -> None:
             pass
 
 
+def _apply_window_chrome(root) -> None:
+    """Ask Windows for the rounded corners and the dark title bar.
+
+    Windows 11 rounds windows itself, but only for apps that opt in -- a Tk
+    window otherwise gets square corners and a light title strip sitting above a
+    dark app. Both are single DWM attributes, and both are no-ops on Windows 10,
+    which is why neither is worth branching on a version check.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        DARK_TITLE_BAR, CORNER_PREFERENCE, ROUND = 20, 33, 2
+        for attribute, value in ((DARK_TITLE_BAR, 1), (CORNER_PREFERENCE, ROUND)):
+            v = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(v), ctypes.sizeof(v))
+    except Exception:
+        pass  # older Windows simply doesn't have these; square corners are fine
+
+
 def open_in_explorer(path: str) -> None:
     if not path:
         return
@@ -508,6 +531,7 @@ def main(argv=None) -> int:
     root.geometry("1180x780")
     root.minsize(940, 600)
     App(root, argv)
+    _apply_window_chrome(root)
     root.mainloop()
     return 0
 
