@@ -1,7 +1,11 @@
 # Sheet Splitter — plan
 
-Agreed 2026-08-14. **Nothing built yet.** Blocked on one real sample sheet in
-`samples/`.
+Agreed 2026-08-14, **built and shipped 2026-08-15** as v1.0.0. Everything below
+describes what the tool does, not what it might do.
+
+⚠ **It has never seen a real sheet.** Every threshold is tuned against synthetic
+ones from `tools/make_test_sheet.py`. Drop a real export in `samples/` and the
+first job is to check the numbers, not to admire them.
 
 ## The problem
 
