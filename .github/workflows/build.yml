@@ -30,24 +30,32 @@ jobs:
           python -m sheetsplit.cli test-sheet/Synthetic-Pattern-M.tif --out out
           python tools/check_split.py out/Synthetic-Pattern-M 12
 
+      # ⚠ --collect-all for numpy and scipy is load-bearing, not belt-and-braces.
+      # Without it the exe builds clean and then dies on launch with "Importing
+      # the numpy C-extensions failed" -- PyInstaller's analysis misses the
+      # compiled submodules and there is nothing at build time to say so.
       - name: Build the exe
         run: >
           pyinstaller --noconfirm --onefile --windowed
           --name "Sheet Splitter"
           --icon sheetsplit/assets/icon.ico
           --add-data "sheetsplit/assets;assets"
+          --collect-all numpy --collect-all scipy --collect-all PIL
           --exclude-module matplotlib --exclude-module pytest
+          --exclude-module pandas --exclude-module IPython
           sheet_splitter.py
 
-      # Launch the real exe on a real desktop and photograph it. This is the
-      # only place the window can be looked at before it reaches the shop.
-      - name: Screenshot the app
+      # Run the real exe on a real desktop, photograph it, and then prove it
+      # actually split something. A green build that ships a broken exe is worse
+      # than a red one -- that is exactly what happened before this step existed.
+      - name: Run the app and prove it works
         shell: powershell
         run: |
           try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "resolution unchanged" }
           $sheet = Resolve-Path "test-sheet\Synthetic-Pattern-M.tif"
           Start-Process ".\dist\Sheet Splitter.exe" -ArgumentList "`"$sheet`""
-          Start-Sleep -Seconds 30
+          Start-Sleep -Seconds 40
+
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
           $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
@@ -56,6 +64,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path shots | Out-Null
           $bmp.Save("$PWD\shots\app.png", [System.Drawing.Imaging.ImageFormat]::Png)
           Write-Host "captured $($bounds.Width)x$($bounds.Height)"
+
+          if (-not (Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue)) {
+            throw "the app is not running 40s after launch -- it crashed on startup"
+          }
+          $out = "C:\Sheet Pieces\Synthetic-Pattern-M"
+          if (-not (Test-Path $out)) {
+            Get-Content "C:\Sheet Pieces\sheet-splitter.log" -ErrorAction SilentlyContinue
+            throw "the app ran but wrote no pieces to $out"
+          }
+          python tools/check_split.py "$out" 12
+          if ($LASTEXITCODE -ne 0) { throw "the exe's own split did not check out" }
+          Get-Content "C:\Sheet Pieces\sheet-splitter.log"
           Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue | Stop-Process -Force
 
       - uses: actions/upload-artifact@v4

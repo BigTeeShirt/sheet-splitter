@@ -7,6 +7,7 @@ cheaper to spot here than on printed media.
 
 from __future__ import annotations
 
+import datetime
 import os
 import queue
 import subprocess
@@ -77,6 +78,8 @@ class SettingsDialog(tk.Toplevel):
         ("ink_threshold", "Ink threshold (0–255)",
          "raise it if blank media is reading as ink"),
         ("cleanup_days", "Delete pieces after (days)", "0 keeps them forever"),
+        ("diagnostics_dir", "Send diagnostics to",
+         "a Synology folder puts them where they can be looked at; blank = beside the pieces"),
     ]
 
     def __init__(self, parent, settings: core.Settings, on_save):
@@ -127,6 +130,7 @@ class SettingsDialog(tk.Toplevel):
             s.min_piece_in = max(0.05, float(self.vars["min_piece_in"].get()))
             s.ink_threshold = min(254, max(0, int(float(self.vars["ink_threshold"].get()))))
             s.cleanup_days = max(0, int(float(self.vars["cleanup_days"].get())))
+            s.diagnostics_dir = self.vars["diagnostics_dir"].get().strip()
         except ValueError:
             messagebox.showerror(APP_NAME, "Those need to be numbers.", parent=self)
             return
@@ -184,6 +188,8 @@ class App(ttk.Frame):
         Button(toolbar, "Choose a folder…", self.choose_folder).pack(
             side="left", padx=(10, 0))
         Button(toolbar, "Settings", self.open_settings).pack(side="right")
+        Button(toolbar, "Save diagnostics", self.save_diagnostics).pack(
+            side="right", padx=(0, 10))
         self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
         ttk.Checkbutton(toolbar, text="Skip sheets already split",
                         variable=self.skip_var,
@@ -293,6 +299,20 @@ class App(ttk.Frame):
         core.setup_logging(Path(self.settings.output_root))
         self.skip_var.set(self.settings.skip_existing)
         self._set_status("Settings saved.")
+
+    def save_diagnostics(self):
+        """One zip holding the log, the settings, and the preview and ink mask
+        for each sheet in this batch -- never the sheets themselves. Enough to
+        work out what went wrong from a machine that can't see this one."""
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
+        try:
+            out = core.build_diagnostics(Path(self.settings.output_root),
+                                         self.results, self.settings, stamp)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Could not save diagnostics:\n\n{exc}")
+            return
+        self._set_status(f"Diagnostics saved: {out}")
+        open_in_explorer(str(out.parent))
 
     def cancel(self):
         self.cancel_flag.set()

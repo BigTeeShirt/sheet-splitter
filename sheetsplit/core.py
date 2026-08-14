@@ -12,14 +12,19 @@ import json
 import logging
 import math
 import os
+import platform
 import shutil
 import sys
 import time
+import zipfile
 from dataclasses import dataclass, asdict, field
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+from . import __version__
 from scipy import ndimage
 
 # Print-resolution sheets are hundreds of megapixels. Pillow's decompression-bomb
@@ -51,6 +56,9 @@ class Settings:
     default_dpi: float = 300.0        # only used if the TIFF doesn't say
     compression: str = "tiff_deflate"
     skip_existing: bool = True
+    # Point this at a Synology-synced folder and a diagnostics zip lands
+    # somewhere it can be read without anyone emailing a file around.
+    diagnostics_dir: str = ""
 
     def __post_init__(self):
         if not self.output_root:
@@ -219,20 +227,26 @@ def detect_pieces(im: Image.Image, s: Settings, dpi: tuple):
         )
 
     labels, n = ndimage.label(mask, structure=np.ones((3, 3), bool))
-    log.info("detection: %s blobs at 1/%s scale", n, factor)
 
     min_px = (s.min_piece_in * min(dpi)) / factor
-    boxes = []
+    boxes, too_small = [], 0
     for sl in ndimage.find_objects(labels):
         if sl is None:
             continue
         ys, xs = sl
         w, h = xs.stop - xs.start, ys.stop - ys.start
         if max(w, h) < min_px:
+            too_small += 1
             continue
         boxes.append((xs.start, ys.start, xs.stop, ys.stop))
 
-    boxes = _reading_order(_drop_contained(boxes))
+    kept = _drop_contained(boxes)
+    # Logged in detail because this is the first thing to look at when a split
+    # comes out wrong, and the machine that ran it is not the one I can see.
+    log.info("detection at 1/%s scale: %s blobs, %s under %.2fin, %s inside "
+             "another piece, %s pieces", factor, n, too_small, s.min_piece_in,
+             len(boxes) - len(kept), len(kept))
+    boxes = _reading_order(kept)
     full = [
         (
             b[0] * factor,
@@ -242,7 +256,25 @@ def detect_pieces(im: Image.Image, s: Settings, dpi: tuple):
         )
         for b in boxes
     ]
-    return full, small, factor
+    return full, small, factor, mask
+
+
+def mask_path(root: Path, sheet: str) -> Path:
+    return root / PREVIEW_DIRNAME / f"{Path(sheet).stem}-mask.png"
+
+
+def save_mask(mask: np.ndarray, out: Path) -> str:
+    """What the splitter thought was ink. Reading this next to the preview is
+    how a threshold problem gets diagnosed from another country."""
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        img = Image.fromarray(np.where(mask, 0, 255).astype(np.uint8), "L")
+        img.thumbnail((1200, 1200), Image.NEAREST)
+        img.save(out, "PNG", optimize=True)
+        return str(out)
+    except Exception as exc:
+        log.warning("could not save mask: %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------- preview
@@ -339,9 +371,10 @@ def cleanup(root: Path, days: int) -> int:
             if folder.exists() and folder.resolve().parent == root.resolve():
                 shutil.rmtree(folder)
                 removed += 1
-            preview = Path(entry.get("preview", ""))
-            if preview.exists() and preview.parent.name == PREVIEW_DIRNAME:
-                preview.unlink()
+            for extra in (Path(entry.get("preview", "")),
+                          mask_path(root, entry.get("sheet", ""))):
+                if extra.exists() and extra.parent.name == PREVIEW_DIRNAME:
+                    extra.unlink()
         except Exception as exc:
             log.warning("cleanup skipped %s: %s", folder, exc)
             continue
@@ -430,11 +463,18 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
                 )
 
             res.dpi = dpi[0]
-            log.info("%s: %sx%s %s @ %.0f dpi", sheet.name, im.size[0], im.size[1],
-                     im.mode, dpi[0])
+            try:
+                size_mb = sheet.stat().st_size / 1e6
+            except OSError:
+                size_mb = 0
+            log.info("%s: %sx%s %s @ %.0f dpi, %s on disk %.0fMB, read in %.1fs",
+                     sheet.name, im.size[0], im.size[1], im.mode, dpi[0],
+                     opened.info.get("compression", "?"), size_mb,
+                     time.time() - started)
 
             step("finding pieces", 0.35)
-            boxes, small, factor = detect_pieces(im, s, dpi)
+            boxes, small, factor, mask = detect_pieces(im, s, dpi)
+            save_mask(mask, mask_path(root, str(sheet)))
             if not boxes:
                 res.message = "no pieces found"
                 res.preview = build_preview(
@@ -546,11 +586,112 @@ def gather_sheets(paths) -> list:
 
 
 def setup_logging(root: Path) -> None:
+    """Rotating, so it survives months of use without becoming a 400MB file
+    nobody can send anywhere."""
     try:
         root.mkdir(parents=True, exist_ok=True)
-        handler = logging.FileHandler(root / "sheet-splitter.log", encoding="utf-8")
+        handler = RotatingFileHandler(root / "sheet-splitter.log", maxBytes=2_000_000,
+                                      backupCount=3, encoding="utf-8")
     except Exception:
         handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     log.setLevel(logging.INFO)
     log.handlers[:] = [handler]
+    log.info("--- Sheet Splitter %s started ---", __version__)
+    for line in system_report():
+        log.info("  %s", line)
+
+
+def system_report() -> list:
+    """Everything I'd otherwise have to ask about over chat."""
+    lines = [
+        f"version {__version__}",
+        f"python {sys.version.split()[0]} ({'frozen exe' if getattr(sys, 'frozen', False) else 'source'})",
+        f"platform {platform.platform()}",
+        f"machine {platform.machine()}, cpus {os.cpu_count()}",
+    ]
+    try:
+        import numpy
+        import scipy
+        lines.append(f"pillow {Image.__version__}, numpy {numpy.__version__}, "
+                     f"scipy {scipy.__version__}")
+    except Exception:
+        pass
+    try:  # free space matters: sheets hydrate from the NAS onto a small SSD
+        usage = shutil.disk_usage(default_output_root().anchor)
+        lines.append(f"disk free {usage.free / 1e9:.0f}GB of {usage.total / 1e9:.0f}GB")
+    except Exception:
+        pass
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class MemStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong),
+                            ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong),
+                            ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong),
+                            ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong),
+                            ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            status = MemStatus()
+            status.dwLength = ctypes.sizeof(MemStatus)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+            lines.append(f"ram {status.ullTotalPhys / 1e9:.0f}GB total, "
+                         f"{status.ullAvailPhys / 1e9:.0f}GB free")
+        except Exception:
+            pass
+    return lines
+
+
+def build_diagnostics(root: Path, results: list, s: Settings,
+                      stamp: str, into: Path | None = None) -> Path:
+    """One zip to send when something looks wrong.
+
+    Deliberately holds the small things that explain a bad split -- the log, the
+    settings, the numbered preview and the ink mask detection actually worked
+    from -- and never the sheet itself, which is gigabytes.
+    """
+    target_dir = into or Path(s.diagnostics_dir or root)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    out = target_dir / f"sheet-splitter-diagnostics-{stamp}.zip"
+
+    summary = {
+        "when": stamp,
+        "system": system_report(),
+        "settings": asdict(s),
+        "sheets": [
+            {
+                "sheet": r.sheet,
+                "ok": r.ok,
+                "skipped": r.skipped,
+                "message": r.message,
+                "dpi": r.dpi,
+                "seconds": round(r.seconds, 2),
+                "warnings": r.warnings,
+                "piece_count": r.count,
+                "pieces": [asdict(p) for p in r.pieces],
+            }
+            for r in results
+        ],
+    }
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("summary.json", json.dumps(summary, indent=2))
+        for name in ("sheet-splitter.log", "sheet-splitter.log.1"):
+            p = root / name
+            if p.exists():
+                z.write(p, name)
+        ledger = _ledger_path(root)
+        if ledger.exists():
+            z.write(ledger, "index.json")
+        for r in results:  # the pictures that explain a bad split
+            for path, label in ((r.preview, "preview"), (mask_path(root, r.sheet), "mask")):
+                p = Path(path) if path else None
+                if p and p.exists():
+                    z.write(p, f"{label}/{p.name}")
+    log.info("diagnostics written to %s", out)
+    return out
