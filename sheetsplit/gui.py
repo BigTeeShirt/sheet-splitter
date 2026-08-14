@@ -214,9 +214,8 @@ class App(ttk.Frame):
         Button(toolbar, "Save diagnostics", self.save_diagnostics).pack(
             side="right", padx=(0, 10))
         self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
-        ttk.Checkbutton(toolbar, text="Skip sheets already split",
-                        variable=self.skip_var,
-                        command=self._skip_changed).pack(side="right", padx=(0, 14))
+        theme.Check(toolbar, "Skip sheets already split", variable=self.skip_var,
+                    command=self._skip_changed).pack(side="right", padx=(0, 14))
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, pady=(14, 0))

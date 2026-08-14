@@ -106,6 +106,71 @@ def apply(root: tk.Misc) -> ttk.Style:
     return style
 
 
+def round_points(x0, y0, x1, y1, r):
+    """Corner points for a rounded rectangle, to be drawn as a smoothed
+    polygon -- Tk has no rounded rectangle of its own."""
+    return [
+        x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+        x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+    ]
+
+
+class Check(tk.Canvas):
+    """A tick that reads as a tick.
+
+    clam draws its own checkbutton glyph as a cross at this size, so a ticked
+    box said "off" when it meant "on". Drawing it is less work than arguing
+    with the theme.
+    """
+
+    BOX = 16
+
+    def __init__(self, parent, text, variable=None, command=None, bg=WINDOW):
+        self.var = variable if variable is not None else tk.BooleanVar(value=False)
+        self.command, self.text = command, text
+        self._font = font(10)
+        self._hover = False
+
+        probe = tk.Label(parent, text=text, font=self._font)
+        tw, th = probe.winfo_reqwidth(), probe.winfo_reqheight()
+        probe.destroy()
+
+        super().__init__(parent, width=self.BOX + 10 + tw,
+                         height=max(self.BOX, th) + 6, highlightthickness=0,
+                         bg=bg, cursor="hand2")
+        self.bind("<Button-1>", self._toggle)
+        self.bind("<Enter>", self._on_hover)
+        self.bind("<Leave>", self._on_hover)
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        h = int(self["height"])
+        top = (h - self.BOX) // 2
+        on = bool(self.var.get())
+        fill = PINK if on else SUNKEN
+        self.create_polygon(round_points(1, top, self.BOX, top + self.BOX - 1, 4),
+                            smooth=True, splinesteps=12, fill=fill,
+                            outline=PINK if on else BORDER, width=1)
+        if on:
+            # ⚠ near-black on the pink, like everything else that sits on it
+            self.create_line(5, top + 8, 8, top + 11, 13, top + 4,
+                             fill=NEAR_BLACK, width=2, capstyle="round",
+                             joinstyle="round")
+        self.create_text(self.BOX + 10, h // 2, anchor="w", text=self.text,
+                         font=self._font, fill=INK if self._hover else MUTED)
+
+    def _on_hover(self, event):
+        self._hover = event.type == tk.EventType.Enter
+        self._draw()
+
+    def _toggle(self, _event):
+        self.var.set(not self.var.get())
+        self._draw()
+        if self.command:
+            self.command()
+
+
 class Button(tk.Canvas):
     """A rounded slab, because ttk cannot round a corner.
 
@@ -136,12 +201,6 @@ class Button(tk.Canvas):
 
     # -- painting
 
-    def _round_points(self, x0, y0, x1, y1, r):
-        return [
-            x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
-            x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
-        ]
-
     def _colours(self):
         if not self._enabled:
             return PANEL, BORDER_SOFT, MUTED
@@ -156,7 +215,7 @@ class Button(tk.Canvas):
         self.delete("all")
         w, h = int(self["width"]), int(self["height"])
         fill, outline, ink = self._colours()
-        self.create_polygon(self._round_points(1, 1, w - 1, h - 1, self.radius),
+        self.create_polygon(round_points(1, 1, w - 1, h - 1, self.radius),
                             smooth=True, splinesteps=24, fill=fill,
                             outline=outline, width=1)
         self.create_text(w // 2, h // 2, text=self.text, fill=ink,
