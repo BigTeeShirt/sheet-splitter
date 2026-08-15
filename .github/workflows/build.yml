@@ -41,6 +41,7 @@ jobs:
           --icon sheetsplit/assets/icon.ico
           --add-data "sheetsplit/assets;assets"
           --collect-all numpy --collect-all scipy --collect-all PIL
+          --collect-all tkinterdnd2
           --exclude-module matplotlib --exclude-module pytest
           --exclude-module pandas --exclude-module IPython
           sheet_splitter.py
@@ -119,6 +120,7 @@ jobs:
           --icon sheetsplit/assets/icon.icns
           --add-data "sheetsplit/assets:assets"
           --collect-all numpy --collect-all scipy --collect-all PIL
+          --collect-all tkinterdnd2
           --exclude-module matplotlib --exclude-module pytest
           --exclude-module pandas --exclude-module IPython
           sheet_splitter.py

@@ -71,7 +71,8 @@ became files.
 
 ## On a Mac
 
-`Sheet Splitter.app` does the same job. Pieces go to `~/Sheet Pieces/`.
+`Sheet Splitter.app` does the same job, with the same destination rules.
+Its log and previews live in `~/Sheet Pieces/`.
 
 ⚠ **A copy downloaded from the releases page is quarantined by macOS** and will
 say it's damaged rather than that it's unsigned. Clear it once:

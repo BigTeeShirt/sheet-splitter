@@ -46,13 +46,14 @@ class Settings:
     """Everything tunable. Lives in a JSON file so thresholds can be dialled in
     on real patterns without waiting for a new build."""
 
+    settings_version: int = 2
     output_root: str = ""
     margin_in: float = 0.125          # kept outside the black line, for the laser
     min_piece_in: float = 1.0         # longest side; smaller blobs are specks
     ink_threshold: int = 12           # 0-255; above this a pixel is ink, not media
     close_px: int = 2                 # bridges pinholes in an outline
     detect_max_px: int = 2000         # long edge of the detection copy
-    cleanup_days: int = 14            # 0 disables
+    cleanup_days: int = 0             # 0 disables; off until asked for
     default_dpi: float = 300.0        # only used if the TIFF doesn't say
     compression: str = "tiff_deflate"
     skip_existing: bool = True
@@ -84,7 +85,14 @@ class Settings:
         try:
             data = json.loads(cls.path().read_text())
             known = {f for f in cls.__dataclass_fields__}
-            return cls(**{k: v for k, v in data.items() if k in known})
+            s = cls(**{k: v for k, v in data.items() if k in known})
+            if data.get("settings_version", 1) < 2:
+                # Auto-delete is off until it is actually wanted; don't leave it
+                # switched on just because an older settings file said so.
+                s.cleanup_days = 0
+                s.settings_version = 2
+                s.save()
+            return s
         except Exception:
             return cls()
 

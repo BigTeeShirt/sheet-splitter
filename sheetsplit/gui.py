@@ -25,6 +25,12 @@ from . import core
 from . import theme
 from .theme import Button
 
+try:  # Tk has no OS drag-and-drop of its own; this wraps the tkdnd library
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DND = True
+except Exception:  # without it everything still works, just via the buttons
+    DND_FILES, TkinterDnD, DND = None, None, False
+
 APP_NAME = "Sheet Splitter"
 WINDOW_TITLE = "Sheet Splitter — Big Tee Shirt Co."
 
@@ -224,6 +230,9 @@ class App(ttk.Frame):
         self.start_btn = Button(toolbar, "Start", self.run, variant="primary")
         self.start_btn.pack(side="right")
         self.start_btn.enable(False)
+        self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
+        theme.Check(toolbar, "Skip sheets already split", variable=self.skip_var,
+                    command=self._skip_changed).pack(side="right", padx=(0, 18))
 
         dest = ttk.Frame(self)
         dest.pack(fill="x", pady=(12, 0))
@@ -240,18 +249,10 @@ class App(ttk.Frame):
         Button(dest, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
         Button(dest, "Save diagnostics", self.save_diagnostics, pad=(14, 8)).pack(
             side="right", padx=(0, 10))
-        self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
-        theme.Check(dest, "Skip sheets already split", variable=self.skip_var,
-                    command=self._skip_changed).pack(side="right", padx=(0, 16))
         self._refresh_dest()
 
         body = ttk.Panedwindow(self, orient="horizontal")
-        body.pack(fill="both", expand=True, pady=(14, 0))
-        body.add(self._build_list(body), weight=2)
-        body.add(self._build_preview(body), weight=3)
-
         footer = ttk.Frame(self)
-        footer.pack(fill="x", pady=(14, 0))
         self.status = ttk.Label(footer, text="Add some sheets, then press Start.",
                                 style="Muted.TLabel")
         self.status.pack(side="left")
@@ -264,7 +265,13 @@ class App(ttk.Frame):
 
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1000,
                                         style="Brand.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(12, 0))
+        # Bottom-up, and the body last: the packer drops whatever will not fit,
+        # and the controls must never be the thing that goes.
+        self.progress.pack(side="bottom", fill="x", pady=(12, 0))
+        footer.pack(side="bottom", fill="x", pady=(14, 0))
+        body.pack(fill="both", expand=True, pady=(14, 0))
+        body.add(self._build_list(body), weight=2)
+        body.add(self._build_preview(body), weight=3)
 
     def _build_header(self):
         header = ttk.Frame(self)
@@ -286,7 +293,7 @@ class App(ttk.Frame):
     def _build_list(self, parent):
         wrap = ttk.Frame(parent)
         self.tree = ttk.Treeview(wrap, columns=("pieces", "time"),
-                                 selectmode="browse", height=14)
+                                 selectmode="browse", height=8)
         self.tree.heading("#0", text="Sheet")
         self.tree.heading("pieces", text="Pieces")
         self.tree.heading("time", text="Time")
@@ -302,7 +309,31 @@ class App(ttk.Frame):
         self.tree.configure(yscrollcommand=bar.set)
         self.tree.bind("<<TreeviewSelect>>", self._row_selected)
         self.tree.bind("<Double-1>", lambda _e: self.open_folder())
+
+        self.empty_hint = ttk.Label(
+            wrap, style="Muted.TLabel", justify="center", anchor="center",
+            text=("Drag sheets here\nor press Add sheets…" if DND
+                  else "Press Add sheets… to begin"))
+        self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
+
+        if DND:
+            for widget in (self.tree, self.empty_hint):
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_drop)
         return wrap
+
+    def _on_drop(self, event):
+        """Dropped paths arrive as one Tcl list, brace-quoted when they contain
+        spaces -- which sheet names generally do."""
+        try:
+            paths = self.tk.splitlist(event.data)
+        except Exception:
+            paths = [event.data]
+        sheets = core.gather_sheets(paths)
+        if not sheets:
+            self._set_status("Those weren't TIFF sheets.")
+            return
+        self.add_sheets(sheets)
 
     def _build_preview(self, parent):
         wrap = ttk.Frame(parent, padding=(14, 0, 0, 0))
@@ -429,6 +460,10 @@ class App(ttk.Frame):
         running = self._running()
         self.start_btn.enable(bool(self.queue) and not running)
         self.clear_btn.enable(bool(self.queue) and not running)
+        if self.queue:
+            self.empty_hint.place_forget()
+        else:
+            self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
 
     def _clear_preview(self):
         self.canvas.delete("all")
@@ -465,7 +500,7 @@ class App(ttk.Frame):
         self.beside_var.set(beside)
         self.beside_check.refresh()
         self.dest_label.config(
-            text="each sheet gets a “<name> pieces” folder next to it" if beside
+            text="a “<name> pieces” folder next to each sheet" if beside
             else f"→  {self.settings.dest_dir}")
 
     def _run(self, sheets: list):
@@ -633,12 +668,12 @@ def main(argv=None) -> int:
     argv = [a for a in argv if a != "--start"]
 
     theme.set_scale(core.Settings.load().text_scale)
-    root = tk.Tk()
+    root = TkinterDnD.Tk() if DND else tk.Tk()
     # Never open wider than the screen: on a 1024x768 display the preferred size
     # puts Settings and Open folder off the right-hand edge, where nobody can
     # reach them.
-    width = max(820, min(1180, root.winfo_screenwidth() - 80))
-    height = max(560, min(780, root.winfo_screenheight() - 120))
+    width = max(820, min(1280, root.winfo_screenwidth() - 80))
+    height = max(560, min(880, root.winfo_screenheight() - 120))
     root.geometry(f"{width}x{height}")
     root.minsize(min(940, width), min(600, height))
     App(root, argv, autostart=autostart)
