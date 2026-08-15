@@ -357,6 +357,19 @@ class App(ttk.Frame):
                 self.empty_hint.config(text="Press Add sheets… to begin")
         return wrap
 
+    def _on_drop(self, event):
+        """Dropped paths arrive as one Tcl list, brace-quoted when they contain
+        spaces -- which sheet names generally do."""
+        try:
+            paths = self.tk.splitlist(event.data)
+        except Exception:
+            paths = [event.data]
+        sheets = core.gather_sheets(paths)
+        if not sheets:
+            self._set_status("Those weren't TIFF sheets.")
+            return
+        self.add_sheets(sheets)
+
     def _build_preview(self, parent):
         """⚠ The preview is a Label, not a canvas image.
 
