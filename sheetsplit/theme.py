@@ -13,6 +13,7 @@ the only pink control on the window.
 
 from __future__ import annotations
 
+import math
 import sys
 import tkinter as tk
 from tkinter import ttk
@@ -35,9 +36,27 @@ AMBER = "#fbbf24"
 
 UI_FONT = "Segoe UI" if sys.platform == "win32" else "Helvetica Neue"
 
+# The apps run at a bumped root size, so their text-sm is nearer 16px than 14.
+# Matching that reads as the same family of screen -- and is a good deal easier
+# on the eyes across a workshop desk.
+BASE = 12
+SCALE = 1.0
 
-def font(size=10, weight="normal"):
-    return (UI_FONT, size, weight)
+
+def set_scale(percent: float) -> None:
+    """Text size, set once before the window is built."""
+    global SCALE
+    SCALE = max(0.8, min(2.0, percent / 100.0))
+
+
+def font(size=None, weight="normal"):
+    return (UI_FONT, max(8, round((BASE if size is None else size) * SCALE)), weight)
+
+
+def px(n: int) -> int:
+    """Scale a pixel measurement alongside the type, so a bigger text size
+    doesn't leave everything rattling around in the same small boxes."""
+    return max(1, round(n * SCALE))
 
 
 def apply(root: tk.Misc) -> ttk.Style:
@@ -52,7 +71,7 @@ def apply(root: tk.Misc) -> ttk.Style:
     style.configure("TLabel", background=WINDOW, foreground=INK)
     style.configure("Muted.TLabel", background=WINDOW, foreground=MUTED)
     style.configure("Title.TLabel", background=WINDOW, foreground=INK,
-                    font=font(15, "bold"))
+                    font=font(18, "bold"))
     style.configure("Warn.TLabel", background=WINDOW, foreground=AMBER)
     style.configure("Error.TLabel", background=WINDOW, foreground=RED)
 
@@ -71,14 +90,14 @@ def apply(root: tk.Misc) -> ttk.Style:
 
     style.configure("TEntry", fieldbackground=SUNKEN, foreground=INK,
                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
-                    insertcolor=INK, padding=6)
+                    insertcolor=INK, padding=px(8))
     style.map("TEntry", bordercolor=[("focus", PINK)])
 
     style.configure("Treeview", background=PANEL, fieldbackground=PANEL,
-                    foreground=INK, bordercolor=BORDER_SOFT, rowheight=30,
+                    foreground=INK, bordercolor=BORDER_SOFT, rowheight=px(36),
                     font=font(), lightcolor=BORDER_SOFT, darkcolor=BORDER_SOFT)
     style.configure("Treeview.Heading", background=WINDOW, foreground=MUTED,
-                    relief="flat", font=font(9, "bold"), padding=(8, 6))
+                    relief="flat", font=font(11, "bold"), padding=(10, 8))
     style.map("Treeview.Heading", background=[("active", WINDOW)])
     # A selected row is NOT pink. Pink is the one main action, and a full-width
     # pink slab beside a pink button means neither of them is the main thing.
@@ -91,7 +110,7 @@ def apply(root: tk.Misc) -> ttk.Style:
 
     style.configure("Brand.Horizontal.TProgressbar", troughcolor=SUNKEN,
                     bordercolor=SUNKEN, background=PINK, lightcolor=PINK,
-                    darkcolor=PINK, thickness=6)
+                    darkcolor=PINK, thickness=px(8))
 
     # clam draws a scrollbar's frame from lightcolor/darkcolor as well as
     # bordercolor; leaving those unset puts a white outline and pale arrows on
@@ -106,13 +125,25 @@ def apply(root: tk.Misc) -> ttk.Style:
     return style
 
 
-def round_points(x0, y0, x1, y1, r):
-    """Corner points for a rounded rectangle, to be drawn as a smoothed
-    polygon -- Tk has no rounded rectangle of its own."""
-    return [
-        x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
-        x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
-    ]
+def round_points(x0, y0, x1, y1, r, steps=7):
+    """A true rounded rectangle: points sampled along real quarter circles.
+
+    Tk has no rounded rectangle. The obvious trick -- four corner points drawn
+    as a smoothed polygon -- gives a soft, slightly uneven bulge rather than a
+    radius, which is why these did not look like the buttons in the apps.
+    """
+    pts = []
+    corners = (
+        (x1 - r, y0 + r, -90, 0),    # top right
+        (x1 - r, y1 - r, 0, 90),     # bottom right
+        (x0 + r, y1 - r, 90, 180),   # bottom left
+        (x0 + r, y0 + r, 180, 270),  # top left
+    )
+    for cx, cy, start, end in corners:
+        for i in range(steps + 1):
+            angle = math.radians(start + (end - start) * i / steps)
+            pts += [cx + r * math.cos(angle), cy + r * math.sin(angle)]
+    return pts
 
 
 class Check(tk.Canvas):
@@ -123,20 +154,19 @@ class Check(tk.Canvas):
     with the theme.
     """
 
-    BOX = 16
-
     def __init__(self, parent, text, variable=None, command=None, bg=WINDOW):
+        self.BOX = px(18)
         self.var = variable if variable is not None else tk.BooleanVar(value=False)
         self.command, self.text = command, text
-        self._font = font(10)
+        self._font = font()
         self._hover = False
 
         probe = tk.Label(parent, text=text, font=self._font)
         tw, th = probe.winfo_reqwidth(), probe.winfo_reqheight()
         probe.destroy()
 
-        super().__init__(parent, width=self.BOX + 10 + tw,
-                         height=max(self.BOX, th) + 6, highlightthickness=0,
+        super().__init__(parent, width=self.BOX + px(10) + tw,
+                         height=max(self.BOX, th) + px(8), highlightthickness=0,
                          bg=bg, cursor="hand2")
         self.bind("<Button-1>", self._toggle)
         self.bind("<Enter>", self._on_hover)
@@ -149,16 +179,22 @@ class Check(tk.Canvas):
         top = (h - self.BOX) // 2
         on = bool(self.var.get())
         fill = PINK if on else SUNKEN
-        self.create_polygon(round_points(1, top, self.BOX, top + self.BOX - 1, 4),
-                            smooth=True, splinesteps=12, fill=fill,
-                            outline=PINK if on else BORDER, width=1)
+        box = self.BOX
+        self.create_polygon(round_points(1, top, box, top + box - 1, px(4)),
+                            fill=fill, outline=PINK if on else BORDER, width=1)
         if on:
             # ⚠ near-black on the pink, like everything else that sits on it
-            self.create_line(5, top + 8, 8, top + 11, 13, top + 4,
-                             fill=NEAR_BLACK, width=2, capstyle="round",
+            self.create_line(box * 0.27, top + box * 0.52,
+                             box * 0.45, top + box * 0.70,
+                             box * 0.76, top + box * 0.28,
+                             fill=NEAR_BLACK, width=px(2), capstyle="round",
                              joinstyle="round")
-        self.create_text(self.BOX + 10, h // 2, anchor="w", text=self.text,
+        self.create_text(self.BOX + px(10), h // 2, anchor="w", text=self.text,
                          font=self._font, fill=INK if self._hover else MUTED)
+
+    def refresh(self):
+        """Redraw after the variable was set from code rather than clicked."""
+        self._draw()
 
     def _on_hover(self, event):
         self._hover = event.type == tk.EventType.Enter
@@ -180,15 +216,17 @@ class Button(tk.Canvas):
     """
 
     def __init__(self, parent, text, command=None, variant="secondary",
-                 pad=(16, 9), radius=6, bg=WINDOW):
-        self.variant, self.radius, self.canvas_bg = variant, radius, bg
-        self._font = font(10, "bold" if variant == "primary" else "normal")
+                 pad=(18, 11), radius=7, bg=WINDOW):
+        self.variant, self.canvas_bg = variant, bg
+        self.radius = px(radius)
+        # Both variants are semibold in button.tsx; Tk has no semibold, so bold.
+        self._font = font(weight="bold")
         self.text, self.command = text, command
         self._enabled, self._hover, self._pressed = True, False, False
 
         probe = tk.Label(parent, text=text, font=self._font)
-        w = probe.winfo_reqwidth() + pad[0] * 2
-        h = probe.winfo_reqheight() + pad[1] * 2
+        w = probe.winfo_reqwidth() + px(pad[0]) * 2
+        h = probe.winfo_reqheight() + px(pad[1]) * 2
         probe.destroy()
 
         super().__init__(parent, width=w, height=h, highlightthickness=0,
@@ -216,8 +254,7 @@ class Button(tk.Canvas):
         w, h = int(self["width"]), int(self["height"])
         fill, outline, ink = self._colours()
         self.create_polygon(round_points(1, 1, w - 1, h - 1, self.radius),
-                            smooth=True, splinesteps=24, fill=fill,
-                            outline=outline, width=1)
+                            fill=fill, outline=outline, width=1)
         self.create_text(w // 2, h // 2, text=self.text, fill=ink,
                          font=self._font)
 

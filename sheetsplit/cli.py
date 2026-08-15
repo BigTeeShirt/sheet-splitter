@@ -13,7 +13,8 @@ from . import core
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="sheetsplit", description=__doc__)
     ap.add_argument("paths", nargs="+", help="sheet TIFFs, or folders of them")
-    ap.add_argument("--out", help="output root (default: local scratch folder)")
+    ap.add_argument("--out", help="put every sheet's pieces under this folder "
+                                  "(default: beside each sheet)")
     ap.add_argument("--margin", type=float, help="inches kept outside the black line")
     ap.add_argument("--min-piece", type=float, help="inches; smaller blobs are ignored")
     ap.add_argument("--threshold", type=int, help="0-255 ink threshold")
@@ -23,7 +24,8 @@ def main(argv=None) -> int:
 
     s = core.Settings.load()
     if args.out:
-        s.output_root = str(Path(args.out).expanduser().resolve())
+        s.dest_mode = "folder"
+        s.dest_dir = str(Path(args.out).expanduser().resolve())
     if args.margin is not None:
         s.margin_in = args.margin
     if args.min_piece is not None:

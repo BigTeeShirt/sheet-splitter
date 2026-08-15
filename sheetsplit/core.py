@@ -56,6 +56,11 @@ class Settings:
     default_dpi: float = 300.0        # only used if the TIFF doesn't say
     compression: str = "tiff_deflate"
     skip_existing: bool = True
+    # Where the pieces land. "beside" puts them next to the sheet they came
+    # from; "folder" puts every sheet's pieces under dest_dir.
+    dest_mode: str = "beside"
+    dest_dir: str = ""
+    text_scale: int = 100
     # Point this at a Synology-synced folder and a diagnostics zip lands
     # somewhere it can be read without anyone emailing a file around.
     diagnostics_dir: str = ""
@@ -89,10 +94,24 @@ class Settings:
         p.write_text(json.dumps(asdict(self), indent=2))
 
 
+def pieces_base(sheet: Path, s: Settings) -> Path:
+    """The directory a sheet's piece folder is created in.
+
+    "beside" puts them next to the sheet they came from, which is what people
+    expect and means nothing has to be found later. ⚠ For sheets living in
+    Synology Drive that does mean the pieces sync back up to the NAS.
+    """
+    if s.dest_mode == "beside":
+        return sheet.parent
+    return Path(s.dest_dir) if s.dest_dir else Path(s.output_root)
+
+
 def default_output_root() -> Path:
-    """Local scratch, deliberately not beside the sheet: the sheets live in
-    Synology Drive, and pieces written next to them would sync back up to the
-    NAS -- roughly another sheet's worth of data per sheet, forever."""
+    """The app's own folder: the log, previews, ink masks and the index of what
+    has been split. The pieces themselves go wherever `dest_mode` says.
+
+    ⚠ Only folders under here are ever auto-deleted. Pieces written beside a
+    sheet sit in the user's own directories and are never touched again."""
     if sys.platform == "win32":
         return Path(os.environ.get("SystemDrive", "C:")) / os.sep / "Sheet Pieces"
     return Path.home() / "Sheet Pieces"
@@ -368,7 +387,11 @@ def cleanup(root: Path, days: int) -> int:
             continue
         folder = Path(entry.get("folder", ""))
         try:
-            if folder.exists() and folder.resolve().parent == root.resolve():
+            # ⚠ Never delete pieces written beside a sheet -- those live in the
+            # user's own folders, quite possibly on the NAS.
+            if folder.exists() and folder.resolve().parent != root.resolve():
+                continue
+            if folder.exists():
                 shutil.rmtree(folder)
                 removed += 1
             for extra in (Path(entry.get("preview", "")),
@@ -434,7 +457,7 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
             # leaving a "(2)" beside it for someone to pick the wrong one from.
             old = Path(prior.get("folder", ""))
             try:
-                if old.exists() and old.resolve().parent == root.resolve():
+                if old.exists() and old.name.startswith(sheet.stem):
                     shutil.rmtree(old)
             except Exception as exc:
                 log.warning("could not replace %s: %s", old, exc)
@@ -484,7 +507,7 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
                 return res
 
             step(f"cutting {len(boxes)} pieces", 0.45)
-            folder = unique_folder(root, sheet.stem)
+            folder = unique_folder(pieces_base(sheet, s), f"{sheet.stem} pieces")
             folder.mkdir(parents=True, exist_ok=True)
             pad = max(2, len(str(len(boxes))))
             mx, my = round(s.margin_in * dpi[0]), round(s.margin_in * dpi[1])

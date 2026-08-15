@@ -100,7 +100,10 @@ class SettingsDialog(tk.Toplevel):
         ("min_piece_in", "Smallest piece (in)", "anything shorter is ignored"),
         ("ink_threshold", "Ink threshold (0–255)",
          "raise it if blank media is reading as ink"),
-        ("cleanup_days", "Delete pieces after (days)", "0 keeps them forever"),
+        ("cleanup_days", "Delete pieces after (days)",
+         "only ever applies to a fixed destination, never to pieces beside a sheet"),
+        ("text_scale", "Text size (%)",
+         "100 is normal, 130 is noticeably bigger; applies next time you open it"),
         ("diagnostics_dir", "Send diagnostics to",
          "a Synology folder puts them where they can be looked at; blank = beside the pieces"),
     ]
@@ -153,6 +156,7 @@ class SettingsDialog(tk.Toplevel):
             s.min_piece_in = max(0.05, float(self.vars["min_piece_in"].get()))
             s.ink_threshold = min(254, max(0, int(float(self.vars["ink_threshold"].get()))))
             s.cleanup_days = max(0, int(float(self.vars["cleanup_days"].get())))
+            s.text_scale = min(200, max(80, int(float(self.vars["text_scale"].get()))))
             s.diagnostics_dir = self.vars["diagnostics_dir"].get().strip()
         except ValueError:
             messagebox.showerror(APP_NAME, "Those need to be numbers.", parent=self)
@@ -163,13 +167,15 @@ class SettingsDialog(tk.Toplevel):
 
 
 class App(ttk.Frame):
-    def __init__(self, master, argv_paths):
+    def __init__(self, master, argv_paths, autostart=False):
         super().__init__(master, padding=(18, 14, 18, 16))
         self.master = master
         self.settings = core.Settings.load()
         core.setup_logging(Path(self.settings.output_root))
 
         self.results: list = []
+        self.queue: list = []          # sheets waiting for Start
+        self.queue_keys: set = set()
         self.events: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.cancel_flag = threading.Event()
@@ -187,8 +193,10 @@ class App(ttk.Frame):
         if removed:
             self._set_status(f"Tidied up {removed} old piece folder(s).")
 
-        if argv_paths:  # sheets dragged onto the exe
-            self.start(core.gather_sheets(argv_paths))
+        if argv_paths:  # sheets dragged onto the exe fill the list
+            self.add_sheets(core.gather_sheets(argv_paths))
+            if autostart:
+                self.after(200, self.run)
 
     # ---------------------------------------------------------------- layout
 
@@ -203,19 +211,39 @@ class App(ttk.Frame):
 
         self._build_header()
 
+        # Load the list up first, then press Start -- nothing runs on its own.
         toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", pady=(14, 0))
-        # Pink is the ONE main action. Everything else is the bordered base button.
-        Button(toolbar, "Choose sheets…", self.choose_files,
-               variant="primary").pack(side="left")
-        Button(toolbar, "Choose a folder…", self.choose_folder).pack(
+        toolbar.pack(fill="x", pady=(16, 0))
+        Button(toolbar, "Add sheets…", self.choose_files).pack(side="left")
+        Button(toolbar, "Add a folder…", self.choose_folder).pack(
             side="left", padx=(10, 0))
-        Button(toolbar, "Settings", self.open_settings).pack(side="right")
-        Button(toolbar, "Save diagnostics", self.save_diagnostics).pack(
+        self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
+        self.clear_btn.pack(side="left", padx=(10, 0))
+        self.clear_btn.enable(False)
+        # Pink is the ONE main action, and starting the work is now that action.
+        self.start_btn = Button(toolbar, "Start", self.run, variant="primary")
+        self.start_btn.pack(side="right")
+        self.start_btn.enable(False)
+
+        dest = ttk.Frame(self)
+        dest.pack(fill="x", pady=(12, 0))
+        self.beside_var = tk.BooleanVar(value=self.settings.dest_mode == "beside")
+        self.beside_check = theme.Check(dest, "Put pieces beside each sheet",
+                                        variable=self.beside_var,
+                                        command=self._dest_mode_changed)
+        self.beside_check.pack(side="left")
+        self.choose_dest_btn = Button(dest, "Choose destination…", self.choose_dest,
+                                      pad=(14, 8))
+        self.choose_dest_btn.pack(side="left", padx=(12, 0))
+        self.dest_label = ttk.Label(dest, text="", style="Muted.TLabel")
+        self.dest_label.pack(side="left", padx=(12, 0))
+        Button(dest, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
+        Button(dest, "Save diagnostics", self.save_diagnostics, pad=(14, 8)).pack(
             side="right", padx=(0, 10))
         self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
-        theme.Check(toolbar, "Skip sheets already split", variable=self.skip_var,
-                    command=self._skip_changed).pack(side="right", padx=(0, 14))
+        theme.Check(dest, "Skip sheets already split", variable=self.skip_var,
+                    command=self._skip_changed).pack(side="right", padx=(0, 16))
+        self._refresh_dest()
 
         body = ttk.Panedwindow(self, orient="horizontal")
         body.pack(fill="both", expand=True, pady=(14, 0))
@@ -224,7 +252,7 @@ class App(ttk.Frame):
 
         footer = ttk.Frame(self)
         footer.pack(fill="x", pady=(14, 0))
-        self.status = ttk.Label(footer, text="Choose a sheet to begin.",
+        self.status = ttk.Label(footer, text="Add some sheets, then press Start.",
                                 style="Muted.TLabel")
         self.status.pack(side="left")
         self.open_btn = Button(footer, "Open folder", self.open_folder)
@@ -243,7 +271,7 @@ class App(ttk.Frame):
         header.pack(fill="x")
         try:
             img = Image.open(resource("logo-wordmark.png"))
-            img.thumbnail((260, 44), Image.LANCZOS)
+            img.thumbnail((780, 132), Image.LANCZOS)
             self._logo = ImageTk.PhotoImage(img)
             tk.Label(header, image=self._logo, bg=theme.WINDOW).pack(side="left")
         except Exception:
@@ -303,7 +331,7 @@ class App(ttk.Frame):
             title="Choose sheets to split",
             filetypes=[("Sheet TIFFs", "*.tif *.tiff"), ("All files", "*.*")])
         if paths:
-            self.start(core.gather_sheets(paths))
+            self.add_sheets(core.gather_sheets(paths))
 
     def choose_folder(self):
         folder = filedialog.askdirectory(title="Choose a folder of sheets")
@@ -312,7 +340,7 @@ class App(ttk.Frame):
             if not sheets:
                 messagebox.showinfo(APP_NAME, "No TIFF sheets in that folder.")
                 return
-            self.start(sheets)
+            self.add_sheets(sheets)
 
     def open_settings(self):
         SettingsDialog(self.master, self.settings, self._settings_saved)
@@ -349,25 +377,96 @@ class App(ttk.Frame):
 
     # ---------------------------------------------------------------- running
 
-    def start(self, sheets: list):
-        if self.worker and self.worker.is_alive():
+    def add_sheets(self, sheets: list):
+        """Queue sheets up. Nothing runs until Start is pressed."""
+        if self._running():
             messagebox.showinfo(APP_NAME, "Still working on the last batch.")
             return
-        if not sheets:
+        for sheet in sheets:
+            key = str(sheet)
+            if key in self.queue_keys:
+                continue
+            self.queue.append(sheet)
+            self.queue_keys.add(key)
+            self.tree.insert("", "end", iid=key, text=f"    {sheet.name}",
+                             values=("", ""))
+        self._refresh_actions()
+        self._set_status(f"{len(self.queue)} sheet(s) ready — press Start."
+                         if self.queue else "Add some sheets, then press Start.")
+
+    def clear_list(self):
+        if self._running():
+            return
+        self.queue, self.queue_keys, self.results = [], set(), []
+        self.tree.delete(*self.tree.get_children())
+        self._clear_preview()
+        self.progress["value"] = 0
+        self.open_btn.enable(False)
+        self._refresh_actions()
+        self._set_status("Add some sheets, then press Start.")
+
+    def run(self):
+        """Start on the whole list."""
+        if not self.queue or self._running():
             return
         self.results = []
-        self.tree.delete(*self.tree.get_children())
-        self.canvas.delete("all")
-        self.detail.config(text="")
-        self.sizes.config(text="")
+        for sheet in self.queue:  # clear any marks from a previous run
+            self.tree.item(str(sheet), text=f"    {sheet.name}", values=("", ""),
+                           tags=())
+        self._clear_preview()
         self.open_btn.enable(False)
         self.cancel_btn.enable(True)
         self.cancel_flag.clear()
-        for sheet in sheets:
-            self.tree.insert("", "end", iid=str(sheet), text=f"    {sheet.name}",
-                             values=("", ""))
-        self.worker = threading.Thread(target=self._run, args=(sheets,), daemon=True)
+        self.worker = threading.Thread(target=self._run, args=(list(self.queue),),
+                                       daemon=True)
         self.worker.start()
+        self._refresh_actions()
+
+    def _running(self) -> bool:
+        return bool(self.worker and self.worker.is_alive())
+
+    def _refresh_actions(self):
+        running = self._running()
+        self.start_btn.enable(bool(self.queue) and not running)
+        self.clear_btn.enable(bool(self.queue) and not running)
+
+    def _clear_preview(self):
+        self.canvas.delete("all")
+        self.detail.config(text="")
+        self.sizes.config(text="")
+
+    # ------------------------------------------------------------ destination
+
+    def choose_dest(self):
+        chosen = filedialog.askdirectory(title="Where should the pieces go?")
+        if chosen:
+            self.settings.dest_dir = chosen
+            self.settings.dest_mode = "folder"
+        elif not self.settings.dest_dir:
+            self.settings.dest_mode = "beside"
+        self.settings.save()
+        self._refresh_dest()
+
+    def _dest_mode_changed(self):
+        if self.beside_var.get():
+            self.settings.dest_mode = "beside"
+            self.settings.save()
+            self._refresh_dest()
+            return
+        if not self.settings.dest_dir:   # nowhere to put them yet -- ask
+            self.choose_dest()
+            return
+        self.settings.dest_mode = "folder"
+        self.settings.save()
+        self._refresh_dest()
+
+    def _refresh_dest(self):
+        beside = self.settings.dest_mode == "beside"
+        self.beside_var.set(beside)
+        self.beside_check.refresh()
+        self.dest_label.config(
+            text="each sheet gets a “<name> pieces” folder next to it" if beside
+            else f"→  {self.settings.dest_dir}")
 
     def _run(self, sheets: list):
         """Worker thread. One sheet at a time on purpose -- each is gigabytes
@@ -460,6 +559,7 @@ class App(ttk.Frame):
             parts.append("stopped")
         self._set_status(" · ".join(parts) + ".   Check the preview before printing.")
         self.open_btn.enable(bool(ok))
+        self._refresh_actions()
         self._row_selected()
 
     # ---------------------------------------------------------------- preview
@@ -526,6 +626,13 @@ class App(ttk.Frame):
 def main(argv=None) -> int:
     _enable_dpi_awareness()
     argv = list(sys.argv[1:] if argv is None else argv)
+    # --start splits straight away instead of waiting for the button. Sheets
+    # dragged onto the icon only fill the list; this is for automation, and it
+    # is what the build uses to prove the packaged app really splits a sheet.
+    autostart = "--start" in argv
+    argv = [a for a in argv if a != "--start"]
+
+    theme.set_scale(core.Settings.load().text_scale)
     root = tk.Tk()
     # Never open wider than the screen: on a 1024x768 display the preferred size
     # puts Settings and Open folder off the right-hand edge, where nobody can
@@ -534,7 +641,7 @@ def main(argv=None) -> int:
     height = max(560, min(780, root.winfo_screenheight() - 120))
     root.geometry(f"{width}x{height}")
     root.minsize(min(940, width), min(600, height))
-    App(root, argv)
+    App(root, argv, autostart=autostart)
     _apply_window_chrome(root)
     root.mainloop()
     return 0

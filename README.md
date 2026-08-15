@@ -15,16 +15,24 @@ The design and the reasoning behind it: **[PLAN.md](PLAN.md)**.
 Put `Sheet Splitter.exe` on the desktop. Nothing to install.
 
 1. Double-click it.
-2. **Choose sheets…** (several at once is fine) or **Choose a folder…** for
-   every TIFF in one go. Dragging sheets onto the icon works too.
-3. Watch the numbered preview. **Check the piece count** before printing —
+2. **Add sheets…** (several at once is fine) or **Add a folder…** for every TIFF
+   in one go. Dragging sheets onto the icon adds them too. Nothing runs yet.
+3. Press **Start**.
+4. Watch the numbered preview. **Check the piece count** before printing —
    that is what the preview is for.
-4. **Open folder**, select all, drag into Edge Print.
+5. **Open folder**, select all, drag into Edge Print.
 
-Pieces are written to `C:\Sheet Pieces\<sheet name>\`, deliberately not next to
-the sheet: the sheets live in Synology Drive, so pieces written beside them
-would sync back up to the NAS. They are deleted after 14 days, and regenerate
-in seconds from a sheet you still have.
+By default each sheet gets a **`<name> pieces` folder right next to it**, so
+there is nothing to go looking for. Untick *Put pieces beside each sheet* and
+**Choose destination…** to send them all to one folder instead.
+
+⚠ Sheets living in Synology Drive means pieces written beside them **sync back
+up to the NAS** — roughly another sheet's worth per sheet. If that becomes a
+problem, point the destination at a local folder; pieces regenerate in seconds
+from a sheet you still have.
+
+⚠ The 14-day cleanup **only ever applies to a fixed destination**. Pieces
+written beside a sheet are in your own folders and are never deleted.
 
 Windows will warn once that it doesn't recognise the app — **More info → Run
 anyway**. That is what an unsigned exe looks like; a signing certificate costs a
@@ -42,7 +50,8 @@ Everything worth adjusting is under **Settings**:
 | Ink threshold | Blank media reads as ink (whole sheet found as one piece) — raise it. A pale piece is missed — lower it. |
 | Smallest piece | Registration marks becoming files — raise it. A small piece missed — lower it. |
 | Margin outside the line | Cut line looks tight against the edge of a piece. |
-| Delete pieces after | 0 keeps them forever. |
+| Delete pieces after | 0 keeps them forever. Never touches pieces beside a sheet. |
+| Text size | 130 makes everything noticeably bigger. Applies next time you open it. |
 
 ### When it needs looking at from somewhere else
 
@@ -79,7 +88,12 @@ python -m sheetsplit.cli sheet.tif [more.tif ...] [--out DIR] [--force]
 ```
 
 Same splitter, no window — for batches, scripting, or working out what a
-setting does.
+setting does. `--out DIR` puts every sheet's pieces under one folder instead of
+beside each sheet.
+
+The app itself takes `--start`, which splits whatever it was given straight away
+rather than waiting for the button. That is what the build uses to prove the
+packaged app really splits a sheet.
 
 ## Developing
 
