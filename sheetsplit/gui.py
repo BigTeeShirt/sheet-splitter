@@ -536,6 +536,10 @@ class App(ttk.Frame):
             return
         self.queue, self.queue_keys, self.results = [], set(), []
         self.scan_queue, self.previews = [], {}
+        # Clearing means a clean slate: the destination goes too, so the next
+        # job cannot inherit one nobody chose for it.
+        self.settings.dest_dir = ""
+        self._refresh_dest()
         self.tree.delete(*self.tree.get_children())
         self._clear_preview()
         self.progress["value"] = 0
