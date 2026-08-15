@@ -21,6 +21,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from . import __version__
 from . import core
 from . import theme
 from .theme import Button
@@ -293,6 +294,11 @@ class App(ttk.Frame):
         self.choose_dest_btn.pack(side="left")
         self.dest_label.pack(side="left", padx=(12, 0))
         self.start_btn.pack(side="right")
+        # One width for the three stacked on the right, so they line up.
+        widest = max(int(b["width"]) for b in
+                     (self.start_btn, self.cancel_btn, self.open_btn))
+        for b in (self.start_btn, self.cancel_btn, self.open_btn):
+            b.set_min_width(widest)
         body.pack(fill="both", expand=True, pady=(14, 0))
         body.add(self._build_list(body), weight=2)
         body.add(self._build_preview(body), weight=3)
@@ -310,7 +316,7 @@ class App(ttk.Frame):
             pass
 
     def _build_menu(self):
-        """One dropdown, for the two things that are not part of the job itself.
+        """One dropdown for the things that are not part of the job itself.
         Everything that does work stays on the window as a button."""
         menubar = tk.Menu(self.master)
         settings = tk.Menu(menubar, tearoff=0)
@@ -318,7 +324,7 @@ class App(ttk.Frame):
                              command=self.open_settings)
         settings.add_command(label="Save diagnostics…",
                              command=self.save_diagnostics)
-        menubar.add_cascade(label="Settings", menu=settings)
+        menubar.add_cascade(label="File", menu=settings)
         self.master.config(menu=menubar)
         self.master.bind_all("<Command-comma>", lambda _e: self.open_settings())
         try:  # macOS puts Preferences in the application menu as well
@@ -342,6 +348,10 @@ class App(ttk.Frame):
             side="left", padx=(14, 0))
         ttk.Label(header, text="cut-and-sew sheets → one file per piece",
                   style="Muted.TLabel").pack(side="left", padx=(12, 0), pady=(6, 0))
+        # Version in the corner: a screenshot or a glance then says which build
+        # it is, without anyone having to find the log.
+        ttk.Label(header, text=f"v{__version__}", style="Muted.TLabel").pack(
+            side="right", pady=(6, 0))
         tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(12, 0))
 
     def _build_list(self, parent):

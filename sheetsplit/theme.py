@@ -268,6 +268,13 @@ class Button(tk.Canvas):
 
     # -- state
 
+    def set_min_width(self, width: int):
+        """Widen to at least `width`, so a column of buttons lines up."""
+        if width > int(self["width"]):
+            self.configure(width=width)
+            self._faces.clear()
+            self._draw()
+
     def enable(self, on: bool = True):
         self._enabled = on
         self.configure(cursor="hand2" if on and self.command else "arrow")
