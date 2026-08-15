@@ -1,11 +1,20 @@
 # Sheet Splitter — plan
 
-Agreed 2026-08-14, **built and shipped 2026-08-15** as v1.0.0. Everything below
-describes what the tool does, not what it might do.
+Agreed 2026-08-14, built 2026-08-15, and **in production use on real jerseys the
+same day**.
 
-⚠ **It has never seen a real sheet.** Every threshold is tuned against synthetic
-ones from `tools/make_test_sheet.py`. Drop a real export in `samples/` and the
-first job is to check the numbers, not to admire them.
+⚠ **This document is the original plan, kept for the reasoning behind each
+decision.** Several of them were overturned once it met real files and a real
+operator. Where the two disagree, the README and the code are right:
+
+| Planned | What actually happened |
+|---|---|
+| Windows PCs at the printers | **Mac only.** The workflow moved to a Mac Mini on day one. |
+| Pieces found by the thick black cut line | ⚠ **Real sheets have no such line.** Detection finds printed ink against blank media, which works either way. |
+| Pieces to local scratch, 14-day cleanup | **A destination must be chosen every session**, and nothing is ever auto-deleted. |
+| Click and select, run on choose | **Explicit Start**, with previews the moment a sheet is added. |
+| Pillow reading the sheet | **Parallel strip decode.** Pillow used one core: 7.3s of a 9.7s wait. Now 0.3s. |
+| ~20–40s a sheet | **7.5s** for a 2GB, 8-piece jersey sheet. |
 
 ## The problem
 
