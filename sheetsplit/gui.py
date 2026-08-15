@@ -234,8 +234,8 @@ class App(ttk.Frame):
         Button(toolbar, "Save diagnostics", self.save_diagnostics,
                pad=(14, 8)).pack(side="right", padx=(0, 10))
 
-        # The destination reads underneath the buttons rather than beside them:
-        # a full path is far too long to sit in a row of controls.
+        # Just the path, underneath the buttons -- too long to sit in the row,
+        # and it needs no label to say what it is.
         self.dest_label = ttk.Label(self, text="", style="Muted.TLabel")
         self.dest_label.pack(fill="x", pady=(10, 0))
         self._refresh_dest()
@@ -530,7 +530,7 @@ class App(ttk.Frame):
     def _refresh_dest(self):
         chosen = bool(self.settings.dest_dir)
         self.dest_label.config(
-            text=f"Pieces go to   {self.settings.dest_dir}" if chosen
+            text=self.settings.dest_dir if chosen
             else "⚠  Choose a destination before starting — it is not remembered "
                  "between sessions, on purpose",
             style="Muted.TLabel" if chosen else "Warn.TLabel")
