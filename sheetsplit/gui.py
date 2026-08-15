@@ -220,11 +220,7 @@ class App(ttk.Frame):
         # Load the list up first, then press Start -- nothing runs on its own.
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(16, 0))
-        self.choose_dest_btn = Button(toolbar, "Choose destination…",
-                                      self.choose_dest)
-        self.choose_dest_btn.pack(side="left")
-        Button(toolbar, "Add sheets…", self.choose_files).pack(
-            side="left", padx=(10, 0))
+        Button(toolbar, "Add sheets…", self.choose_files).pack(side="left")
         Button(toolbar, "Add a folder…", self.choose_folder).pack(
             side="left", padx=(10, 0))
         self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
@@ -234,12 +230,7 @@ class App(ttk.Frame):
         Button(toolbar, "Save diagnostics", self.save_diagnostics,
                pad=(14, 8)).pack(side="right", padx=(0, 10))
 
-        # Just the path, underneath the buttons -- too long to sit in the row,
-        # and it needs no label to say what it is.
-        self.dest_label = ttk.Label(self, text="", style="Muted.TLabel")
-        self.dest_label.pack(fill="x", pady=(10, 0))
-        self._refresh_dest()
-        tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(12, 0))
+        tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(14, 0))
 
         body = ttk.Panedwindow(self, orient="horizontal")
         footer = ttk.Frame(self)
@@ -265,6 +256,7 @@ class App(ttk.Frame):
         body.pack(fill="both", expand=True, pady=(14, 0))
         body.add(self._build_list(body), weight=2)
         body.add(self._build_preview(body), weight=3)
+        self._refresh_dest()
         # Place the sash deliberately: left to itself the list can take almost
         # the whole width and leave the preview a sliver.
         self.after(200, lambda: self._place_sash(body))
@@ -296,26 +288,39 @@ class App(ttk.Frame):
 
     def _build_list(self, parent):
         wrap = ttk.Frame(parent)
-        self.tree = ttk.Treeview(wrap, columns=("pieces", "time"),
+
+        # Bottom strip first, then the list fills what is left: sheets go in
+        # above, and this says where they come out.
+        under = ttk.Frame(wrap)
+        under.pack(side="bottom", fill="x", pady=(12, 0))
+        self.choose_dest_btn = Button(under, "Choose destination…",
+                                      self.choose_dest, pad=(14, 8))
+        self.choose_dest_btn.pack(side="left")
+        self.dest_label = ttk.Label(under, text="", style="Muted.TLabel")
+        self.dest_label.pack(side="left", padx=(12, 0))
+
+        listing = ttk.Frame(wrap)
+        listing.pack(side="top", fill="both", expand=True)
+        self.tree = ttk.Treeview(listing, columns=("pieces", "time"),
                                  selectmode="browse", height=8)
         self.tree.heading("#0", text="Sheet")
         self.tree.heading("pieces", text="Pieces")
         self.tree.heading("time", text="Time")
         self.tree.column("#0", width=280, anchor="w")
         self.tree.column("pieces", width=70, anchor="center")
-        self.tree.column("time", width=70, anchor="e")
+        self.tree.column("time", width=90, anchor="e")
         self.tree.tag_configure("warn", foreground=theme.AMBER)
         self.tree.tag_configure("fail", foreground=theme.RED)
         self.tree.tag_configure("skip", foreground=theme.MUTED)
         self.tree.pack(side="left", fill="both", expand=True)
-        bar = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        bar = ttk.Scrollbar(listing, orient="vertical", command=self.tree.yview)
         bar.pack(side="right", fill="y")
         self.tree.configure(yscrollcommand=bar.set)
         self.tree.bind("<<TreeviewSelect>>", self._row_selected)
         self.tree.bind("<Double-1>", lambda _e: self.open_folder())
 
         self.empty_hint = ttk.Label(
-            wrap, style="Muted.TLabel", justify="center", anchor="center",
+            listing, style="Muted.TLabel", justify="center", anchor="center",
             text=("Drag sheets here\nor press Add sheets…" if DND
                   else "Press Add sheets… to begin"))
         self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
@@ -325,19 +330,6 @@ class App(ttk.Frame):
                 widget.drop_target_register(DND_FILES)
                 widget.dnd_bind("<<Drop>>", self._on_drop)
         return wrap
-
-    def _on_drop(self, event):
-        """Dropped paths arrive as one Tcl list, brace-quoted when they contain
-        spaces -- which sheet names generally do."""
-        try:
-            paths = self.tk.splitlist(event.data)
-        except Exception:
-            paths = [event.data]
-        sheets = core.gather_sheets(paths)
-        if not sheets:
-            self._set_status("Those weren't TIFF sheets.")
-            return
-        self.add_sheets(sheets)
 
     def _build_preview(self, parent):
         """⚠ The preview is a Label, not a canvas image.
@@ -474,8 +466,23 @@ class App(ttk.Frame):
 
     def run(self):
         """Start on the whole list."""
-        if not self.queue or self._running():
+        core.log.info("Start pressed: %d sheet(s) queued, destination %r, "
+                      "already running=%s", len(self.queue),
+                      self.settings.dest_dir, self._running())
+        if self._running():
             return
+        # ⚠ Start stays pink and pressable. Greying it out to enforce "choose a
+        # destination first" just produced a dead button with no explanation --
+        # it reads as broken, which is exactly how it was reported.
+        if not self.queue:
+            self._set_status("Add some sheets first.")
+            self.choose_files()
+            return
+        if not self.settings.dest_dir:
+            self._set_status("Choose where the pieces should go.")
+            self.choose_dest()
+            if not self.settings.dest_dir:
+                return
         self.results = []
         for sheet in self.queue:  # clear any marks from a previous run
             self.tree.item(str(sheet), text=f"    {sheet.name}", values=("", ""),
@@ -501,8 +508,7 @@ class App(ttk.Frame):
 
     def _refresh_actions(self):
         running = self._running()
-        self.start_btn.enable(bool(self.queue) and not running
-                              and bool(self.settings.dest_dir))
+        self.start_btn.enable(not running)
         self.clear_btn.enable(bool(self.queue) and not running)
         if self.queue:
             self.empty_hint.place_forget()
@@ -571,7 +577,13 @@ class App(ttk.Frame):
             self.events.put(("crash", str(exc), None))
 
     def _pump(self):
-        """Drain worker events on the UI thread."""
+        """Drain worker events on the UI thread.
+
+        ⚠ Everything is inside the try, and the reschedule is in the finally.
+        This runs on Tk's `after` chain, so an exception escaping it stops the
+        chain for good: progress, results and buttons all quietly stop updating
+        and the window looks like it has ignored you.
+        """
         try:
             while True:
                 kind, a, b = self.events.get_nowait()
@@ -600,7 +612,10 @@ class App(ttk.Frame):
                     messagebox.showerror(APP_NAME, f"Something went wrong:\n\n{a}")
         except queue.Empty:
             pass
-        self.after(60, self._pump)
+        except Exception:
+            core.log.exception("error handling a UI event")
+        finally:
+            self.after(60, self._pump)
 
     def _scanned(self, sheet: str, path: str, count: int):
         """A sheet has been looked at. Its preview is ready before Start."""
