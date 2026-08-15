@@ -341,10 +341,20 @@ class App(ttk.Frame):
                   else "Press Add sheets… to begin"))
         self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
 
+        # ⚠ Registering a drop target is wrapped because it can fail at runtime
+        # even when the import succeeded: if the native tkdnd package did not
+        # load, this raises `invalid command name "tkdnd::drop_target"` in the
+        # middle of building the window, and the app dies with no window at all.
+        # Losing drag-and-drop is a nuisance; losing the app is not acceptable.
         if DND:
-            for widget in (self.tree, self.empty_hint):
-                widget.drop_target_register(DND_FILES)
-                widget.dnd_bind("<<Drop>>", self._on_drop)
+            try:
+                for widget in (self.tree, self.empty_hint):
+                    widget.drop_target_register(DND_FILES)
+                    widget.dnd_bind("<<Drop>>", self._on_drop)
+                core.log.info("drop target registered")
+            except Exception as exc:
+                core.log.warning("drag and drop unavailable: %s", exc)
+                self.empty_hint.config(text="Press Add sheets… to begin")
         return wrap
 
     def _build_preview(self, parent):
@@ -764,6 +774,12 @@ class App(ttk.Frame):
 
 
 def main(argv=None) -> int:
+    """⚠ Everything is logged, including a crash while the window is built.
+
+    A windowed app has nowhere to print a traceback: it simply vanishes, and the
+    log stops mid-startup with no clue why. That happened once and cost a build
+    to work out.
+    """
     _enable_dpi_awareness()
     argv = list(sys.argv[1:] if argv is None else argv)
     # --start splits straight away instead of waiting for the button. Sheets
@@ -778,7 +794,20 @@ def main(argv=None) -> int:
     argv = [a for a in argv if a != "--start"]
 
     theme.set_scale(core.Settings.load().text_scale)
-    root = TkinterDnD.Tk() if DND else tk.Tk()
+    global DND
+    root = None
+    if DND:
+        try:
+            root = TkinterDnD.Tk()
+            root.tk.call("package", "require", "tkdnd")   # prove it really loaded
+        except Exception as exc:
+            core.log.warning("tkdnd did not load (%s); carrying on without "
+                             "drag and drop", exc)
+            if root is not None:
+                root.destroy()
+            root, DND = None, False
+    if root is None:
+        root = tk.Tk()
     # Never open wider than the screen: on a 1024x768 display the preferred size
     # puts Settings and Open folder off the right-hand edge, where nobody can
     # reach them.
@@ -786,7 +815,11 @@ def main(argv=None) -> int:
     height = max(560, min(880, root.winfo_screenheight() - 120))
     root.geometry(f"{width}x{height}")
     root.minsize(min(940, width), min(600, height))
-    App(root, argv, autostart=autostart, dest=dest)
+    try:
+        App(root, argv, autostart=autostart, dest=dest)
+    except Exception:
+        core.log.exception("could not build the window")
+        raise
     _apply_window_chrome(root)
     root.mainloop()
     return 0
