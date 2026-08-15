@@ -223,18 +223,25 @@ class App(ttk.Frame):
         self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
         self.clear_btn.pack(side="left", padx=(10, 0))
         self.clear_btn.enable(False)
+        Button(toolbar, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
+        Button(toolbar, "Save diagnostics", self.save_diagnostics,
+               pad=(14, 8)).pack(side="right", padx=(0, 10))
 
-        dest = ttk.Frame(self)
-        dest.pack(fill="x", pady=(12, 0))
-        self.choose_dest_btn = Button(dest, "Choose destination…", self.choose_dest,
-                                      pad=(14, 8))
+        # The destination gets its own centred band. It has to be chosen before
+        # anything can run, so it should not be crowded in with everything else.
+        band = ttk.Frame(self)
+        band.pack(fill="x", pady=(14, 0))
+        middle = ttk.Frame(band)
+        middle.pack(anchor="center")
+        ttk.Label(middle, text="Pieces go to", style="Muted.TLabel").pack(
+            side="left", padx=(0, 12))
+        self.choose_dest_btn = Button(middle, "Choose destination…",
+                                      self.choose_dest)
         self.choose_dest_btn.pack(side="left")
-        self.dest_label = ttk.Label(dest, text="", style="Muted.TLabel")
-        self.dest_label.pack(side="left", padx=(12, 0))
-        Button(dest, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
-        Button(dest, "Save diagnostics", self.save_diagnostics, pad=(14, 8)).pack(
-            side="right", padx=(0, 10))
+        self.dest_label = ttk.Label(middle, text="", style="Muted.TLabel")
+        self.dest_label.pack(side="left", padx=(14, 0))
         self._refresh_dest()
+        tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(14, 0))
 
         body = ttk.Panedwindow(self, orient="horizontal")
         footer = ttk.Frame(self)
@@ -260,6 +267,17 @@ class App(ttk.Frame):
         body.pack(fill="both", expand=True, pady=(14, 0))
         body.add(self._build_list(body), weight=2)
         body.add(self._build_preview(body), weight=3)
+        # Place the sash deliberately: left to itself the list can take almost
+        # the whole width and leave the preview a sliver.
+        self.after(200, lambda: self._place_sash(body))
+
+    def _place_sash(self, body):
+        try:
+            width = body.winfo_width()
+            if width > 400:
+                body.sashpos(0, int(width * 0.45))
+        except Exception:
+            pass
 
     def _build_header(self):
         header = ttk.Frame(self)
@@ -324,11 +342,26 @@ class App(ttk.Frame):
         self.add_sheets(sheets)
 
     def _build_preview(self, parent):
+        """⚠ The preview is a Label, not a canvas image.
+
+        On a canvas it drew without error and without appearing -- the log said
+        "preview drawn" while the panel stayed empty on the Mac Mini, and it
+        rendered fine on the build runner, so it was never reproducible here. A
+        Label showing a PhotoImage is the plainest thing Tk offers and takes
+        that whole class of problem off the table.
+        """
         wrap = ttk.Frame(parent, padding=(14, 0, 0, 0))
-        self.canvas = tk.Canvas(wrap, bg=theme.PANEL, highlightthickness=1,
-                                highlightbackground=theme.BORDER_SOFT)
-        self.canvas.pack(fill="both", expand=True)
-        self.canvas.bind("<Configure>", self._canvas_resized)
+        self.preview_box = tk.Frame(wrap, bg=theme.PANEL, highlightthickness=1,
+                                    highlightbackground=theme.BORDER_SOFT,
+                                    width=460, height=380)
+        self.preview_box.pack(fill="both", expand=True)
+        self.preview_box.pack_propagate(False)
+        self.preview_label = tk.Label(self.preview_box, bg=theme.PANEL,
+                                      fg=theme.MUTED, font=theme.font(),
+                                      text="the preview appears here")
+        self.preview_label.pack(fill="both", expand=True)
+        self.preview_box.bind("<Configure>", self._canvas_resized)
+
         self.detail = ttk.Label(wrap, text="", wraplength=560, justify="left",
                                 style="Warn.TLabel")
         self.detail.pack(fill="x", pady=(10, 0))
@@ -460,7 +493,6 @@ class App(ttk.Frame):
         # _preview_path, so the preview reappeared moments after Clear list.
         self._preview_path = ""
         self._preview_img = None
-        self.canvas.delete("all")
         self.detail.config(text="")
         self.sizes.config(text="")
 
@@ -633,24 +665,25 @@ class App(ttk.Frame):
 
     def _draw_preview(self, path: str):
         self._preview_path = path or ""
-        self.canvas.delete("all")
-        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if w < 20 or h < 20:
-            return          # canvas not laid out yet; a resize will call back
+        w = self.preview_box.winfo_width() - 20
+        h = self.preview_box.winfo_height() - 20
+        if w < 40 or h < 40:
+            return          # not laid out yet; the Configure binding calls back
         if not path or not Path(path).exists():
-            core.log.warning("no preview to draw (path=%r)", path)
-            self.canvas.create_text(w // 2, h // 2, fill=theme.MUTED,
-                                    text="no preview for this sheet")
+            self._preview_img = None
+            self.preview_label.config(image="", text="the preview appears here")
             return
         try:
             img = Image.open(path)
-            img.thumbnail((w - 20, h - 20), Image.LANCZOS)
+            img.thumbnail((w, h), Image.LANCZOS)
             self._preview_img = ImageTk.PhotoImage(img)
-            self.canvas.create_image(w // 2, h // 2, image=self._preview_img)
-            core.log.info("preview drawn: %s", Path(path).name)
+            self.preview_label.config(image=self._preview_img, text="")
+            core.log.info("preview shown: %s at %dx%d in a %dx%d panel",
+                          Path(path).name, img.width, img.height, w, h)
         except Exception as exc:
-            self.canvas.create_text(w // 2, h // 2, fill=theme.MUTED,
-                                    text=f"preview unavailable\n{exc}")
+            core.log.exception("could not show preview %s", path)
+            self._preview_img = None
+            self.preview_label.config(image="", text=f"preview unavailable\n{exc}")
 
     def _set_status(self, text: str):
         self.status.config(text=text)
