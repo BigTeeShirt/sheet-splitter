@@ -167,6 +167,39 @@ class SettingsDialog(tk.Toplevel):
         self.destroy()
 
 
+class Notice(tk.Toplevel):
+    """The app saying how it went, in the app's own clothes.
+
+    A system alert would be the easy option and looks like it belongs to
+    something else entirely.
+    """
+
+    def __init__(self, parent, heading: str, lines: list, tone: str = "ok"):
+        super().__init__(parent, bg=theme.WINDOW)
+        self.title(APP_NAME)
+        self.transient(parent)
+        self.resizable(False, False)
+
+        frame = ttk.Frame(self, padding=(28, 24, 28, 20))
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=heading,
+                  style="Error.TLabel" if tone == "error" else "Title.TLabel"
+                  ).pack(anchor="w")
+        for line in lines:
+            ttk.Label(frame, text=line, style="Muted.TLabel", justify="left",
+                      wraplength=460).pack(anchor="w", pady=(10, 0))
+        Button(frame, "OK", self.destroy).pack(anchor="e", pady=(22, 0))
+
+        self.bind("<Return>", lambda _e: self.destroy())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.update_idletasks()
+        x = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        y = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+
 class App(ttk.Frame):
     def __init__(self, master, argv_paths, autostart=False, dest=None):
         super().__init__(master, padding=(18, 14, 18, 16))
@@ -231,6 +264,14 @@ class App(ttk.Frame):
         tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(14, 0))
 
         body = ttk.Panedwindow(self, orient="horizontal")
+        # Where the pieces go, and the button that sends them there, on one line
+        # under the list.
+        action = ttk.Frame(self)
+        self.choose_dest_btn = Button(action, "Choose destination…",
+                                      self.choose_dest, pad=(14, 8))
+        self.dest_label = ttk.Label(action, text="", style="Muted.TLabel")
+        self.start_btn = Button(action, "Start", self.run)
+
         footer = ttk.Frame(self)
         self.status = ttk.Label(footer, text="Add some sheets, then press Start.",
                                 style="Muted.TLabel")
@@ -241,16 +282,17 @@ class App(ttk.Frame):
         self.cancel_btn = Button(footer, "Stop", self.cancel)
         self.cancel_btn.pack(side="right", padx=(0, 10))
         self.cancel_btn.enable(False)
-        self.start_btn = Button(footer, "Start", self.run)
-        self.start_btn.pack(side="right", padx=(0, 10))
-        self.start_btn.enable(False)
 
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1000,
                                         style="Brand.Horizontal.TProgressbar")
         # Bottom-up, and the body last: the packer drops whatever will not fit,
         # and the controls must never be the thing that goes.
         self.progress.pack(side="bottom", fill="x", pady=(12, 0))
-        footer.pack(side="bottom", fill="x", pady=(14, 0))
+        footer.pack(side="bottom", fill="x", pady=(12, 0))
+        action.pack(side="bottom", fill="x", pady=(14, 0))
+        self.choose_dest_btn.pack(side="left")
+        self.dest_label.pack(side="left", padx=(12, 0))
+        self.start_btn.pack(side="right")
         body.pack(fill="both", expand=True, pady=(14, 0))
         body.add(self._build_list(body), weight=2)
         body.add(self._build_preview(body), weight=3)
@@ -304,16 +346,6 @@ class App(ttk.Frame):
 
     def _build_list(self, parent):
         wrap = ttk.Frame(parent)
-
-        # Bottom strip first, then the list fills what is left: sheets go in
-        # above, and this says where they come out.
-        under = ttk.Frame(wrap)
-        under.pack(side="bottom", fill="x", pady=(12, 0))
-        self.choose_dest_btn = Button(under, "Choose destination…",
-                                      self.choose_dest, pad=(14, 8))
-        self.choose_dest_btn.pack(side="left")
-        self.dest_label = ttk.Label(under, text="", style="Muted.TLabel")
-        self.dest_label.pack(side="left", padx=(12, 0))
 
         listing = ttk.Frame(wrap)
         listing.pack(side="top", fill="both", expand=True)
@@ -394,11 +426,6 @@ class App(ttk.Frame):
         self.detail = ttk.Label(wrap, text="", wraplength=560, justify="left",
                                 style="Warn.TLabel")
         self.detail.pack(fill="x", pady=(10, 0))
-        # Finished sizes, so a piece cropped wrong is obvious as a number as
-        # well as a picture.
-        self.sizes = ttk.Label(wrap, text="", wraplength=560, justify="left",
-                               style="Muted.TLabel")
-        self.sizes.pack(fill="x", pady=(6, 0))
         return wrap
 
     # ---------------------------------------------------------------- actions
@@ -560,7 +587,6 @@ class App(ttk.Frame):
         self._preview_path = ""
         self._preview_img = None
         self.detail.config(text="")
-        self.sizes.config(text="")
 
     # ------------------------------------------------------------ destination
 
@@ -714,6 +740,32 @@ class App(ttk.Frame):
         self.open_btn.enable(bool(ok))
         self._refresh_actions()
         self._row_selected()
+        self._announce(results, failed, flagged)
+
+    def _announce(self, results, failed, flagged):
+        """One dialog at the end saying what happened, rather than making
+        someone read the status line to find out whether it worked."""
+        if not results:
+            return
+        lines = []
+        for r in results:
+            name = Path(r.sheet).name
+            if not r.ok:
+                lines.append(f"{name} — {r.message or 'failed'}")
+                continue
+            found = self.previews.get(str(Path(r.sheet)), (None, r.count))[1]
+            lines.append(f"{name} — {r.count} of {found} pieces cut")
+        for r in flagged:
+            for w in r.warnings:
+                lines.append(f"⚠ {Path(r.sheet).name}: {w}")
+
+        if failed:
+            heading, tone = "Finished with errors", "error"
+        elif self.cancel_flag.is_set():
+            heading, tone = "Stopped", "ok"
+        else:
+            heading, tone = "Complete", "ok"
+        Notice(self.master, heading, lines, tone)
 
     # ---------------------------------------------------------------- preview
 
@@ -738,23 +790,11 @@ class App(ttk.Frame):
                          "Untick “skip sheets already split” to do it again.")
         self.detail.config(text="\n".join(notes),
                            style="Error.TLabel" if not r.ok else "Warn.TLabel")
-        self.sizes.config(text=self._sizes_text(r))
         self.open_btn.enable(bool(r.folder))
         self._draw_preview(r.preview)
 
-    @staticmethod
-    def _sizes_text(r: core.SheetResult) -> str:
-        if not r.pieces:
-            return ""
-        # Non-breaking spaces inside an entry, ordinary ones between them, so a
-        # wrap never splits "7 · 5.05×5.15" across two lines.
-        parts = [f"{p.index} · {p.width_in:.2f}×{p.height_in:.2f}"
-                 for p in r.pieces]
-        return "Finished sizes in inches    " + "     ".join(parts)
-
     def _canvas_resized(self, event):
-        for label in (self.detail, self.sizes):
-            label.config(wraplength=max(200, event.width - 8))
+        self.detail.config(wraplength=max(200, event.width - 8))
         if self._resize_job:
             self.after_cancel(self._resize_job)
         self._resize_job = self.after(
