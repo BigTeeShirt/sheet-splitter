@@ -178,6 +178,9 @@ class App(ttk.Frame):
         self.master = master
         self.settings = core.Settings.load()
         core.setup_logging(Path(self.settings.output_root))
+        # Worth recording: if the native library fails to load, drag-and-drop
+        # quietly stops existing and the buttons carry on as if nothing is wrong.
+        core.log.info("drag and drop: %s", "available" if DND else "UNAVAILABLE")
 
         self.results: list = []
         self.queue: list = []          # sheets waiting for Start
