@@ -531,8 +531,7 @@ class App(ttk.Frame):
         chosen = bool(self.settings.dest_dir)
         self.dest_label.config(
             text=self.settings.dest_dir if chosen
-            else "⚠  Choose a destination before starting — it is not remembered "
-                 "between sessions, on purpose",
+            else "Choose destination",
             style="Muted.TLabel" if chosen else "Warn.TLabel")
 
     def _run(self, sheets: list):
