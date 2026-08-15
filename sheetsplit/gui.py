@@ -294,11 +294,14 @@ class App(ttk.Frame):
         self.choose_dest_btn.pack(side="left")
         self.dest_label.pack(side="left", padx=(12, 0))
         self.start_btn.pack(side="right")
-        # One width for the three stacked on the right, so they line up.
-        widest = max(int(b["width"]) for b in
-                     (self.start_btn, self.cancel_btn, self.open_btn))
-        for b in (self.start_btn, self.cancel_btn, self.open_btn):
-            b.set_min_width(widest)
+        # Stop and Open folder match each other, and Start spans both of them
+        # plus the gap between -- it is the one that does the work, so it reads
+        # as the full-width action above the pair.
+        GAP = 10
+        pair_width = max(int(self.cancel_btn["width"]), int(self.open_btn["width"]))
+        self.cancel_btn.set_min_width(pair_width)
+        self.open_btn.set_min_width(pair_width)
+        self.start_btn.set_min_width(pair_width * 2 + GAP)
         body.pack(fill="both", expand=True, pady=(14, 0))
         body.add(self._build_list(body), weight=2)
         body.add(self._build_preview(body), weight=3)
