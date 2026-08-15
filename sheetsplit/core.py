@@ -26,6 +26,12 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+try:  # decodes a striped TIFF across every core; Pillow uses one
+    import tifffile
+    import imagecodecs  # noqa: F401  -- tifffile needs it for deflate
+except Exception:       # falls back to Pillow, just slower
+    tifffile = None
+
 from . import __version__
 from scipy import ndimage
 
@@ -227,7 +233,47 @@ def sheet_dpi(im: Image.Image, fallback: float) -> tuple:
     return fallback, fallback
 
 
-def ink_map(small: Image.Image) -> np.ndarray:
+def read_sheet(path: Path, s: Settings):
+    """The whole sheet as an array, with its resolution and colour profile.
+
+    ⚠ This is the single most expensive thing the program does, and Pillow does
+    it on one core: 7.3s for a 2GB jersey sheet, which is most of the wait
+    before anything appears on screen. tifffile hands the 1265 strips to every
+    core at once and takes well under a second. Pillow stays as the fallback.
+    """
+    if tifffile is not None:
+        try:
+            with tifffile.TiffFile(str(path)) as tf:
+                page = tf.pages[0]
+                arr = page.asarray(maxworkers=os.cpu_count() or 4)
+                icc = page.tags.get(34675)          # InterColorProfile
+                return arr, _tag_dpi(page, s.default_dpi), (icc.value if icc else None)
+        except Exception as exc:
+            log.warning("tifffile could not read %s (%s) — using Pillow",
+                        path.name, exc)
+    with Image.open(path) as im:
+        im.load()
+        return np.asarray(im), sheet_dpi(im, s.default_dpi), im.info.get("icc_profile")
+
+
+def _tag_dpi(page, fallback: float) -> tuple:
+    """Resolution straight off the TIFF tags. Getting this wrong makes every
+    piece print at the wrong physical size."""
+    try:
+        unit = page.tags["ResolutionUnit"].value
+        out = []
+        for name in ("XResolution", "YResolution"):
+            num, den = page.tags[name].value
+            value = num / den
+            out.append(value * 2.54 if int(unit) == 3 else value)  # 3 = centimetre
+        if out[0] > 1 and out[1] > 1:
+            return out[0], out[1]
+    except Exception:
+        pass
+    return fallback, fallback
+
+
+def ink_map(small) -> np.ndarray:
     """How much ink is on each pixel, 0-255, whatever the colour space.
 
     Blank sublimation media is zero ink in CMYK, so this finds the printed piece
@@ -235,14 +281,11 @@ def ink_map(small: Image.Image) -> np.ndarray:
     still matters -- it is what guarantees the piece reads as one closed blob
     even when the art inside runs pale."""
     arr = np.asarray(small)
-    mode = small.mode
-    if mode == "CMYK":
-        return arr.max(axis=2)
-    if mode in ("RGB", "RGBA"):
-        return 255 - arr[:, :, :3].min(axis=2)
-    if mode == "L":
+    if arr.ndim == 2:                       # greyscale
         return 255 - arr
-    return 255 - np.asarray(small.convert("L"))
+    if arr.shape[2] >= 4:                   # CMYK: blank media is zero ink
+        return arr[:, :, :4].max(axis=2)
+    return 255 - arr[:, :, :3].min(axis=2)  # RGB
 
 
 # ---------------------------------------------------------------- detection
@@ -278,11 +321,16 @@ def _drop_contained(boxes: list) -> list:
     return keep
 
 
-def detect_pieces(im: Image.Image, s: Settings, dpi: tuple):
-    """Return (boxes in full-resolution pixels, the small image detection ran on,
-    the detection scale factor)."""
-    factor = max(1, math.ceil(max(im.size) / max(200, s.detect_max_px)))
-    small = im.reduce(factor) if factor > 1 else im.copy()
+def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
+    """Return (boxes in full-resolution pixels, the small array detection ran on,
+    the detection scale factor).
+
+    Downsampling is a stride rather than a resize -- no copy, no filtering, and
+    the pieces are thousands of pixels across so nothing is lost.
+    """
+    height, width = arr.shape[:2]
+    factor = max(1, math.ceil(max(width, height) / max(200, s.detect_max_px)))
+    small = arr[::factor, ::factor]
 
     mask = ink_map(small) > s.ink_threshold
     if s.close_px > 0:
@@ -311,16 +359,41 @@ def detect_pieces(im: Image.Image, s: Settings, dpi: tuple):
              "another piece, %s pieces", factor, n, too_small, s.min_piece_in,
              len(boxes) - len(kept), len(kept))
     boxes = _reading_order(kept)
+    # ⚠ Detection samples every `factor`-th pixel, so ink can sit up to one
+    # step outside the blob it found. Grow each box by a step before mapping
+    # back, rather than relying on the margin to cover it -- the margin is a
+    # setting and can be turned down to nothing.
     full = [
         (
-            b[0] * factor,
-            b[1] * factor,
-            min(b[2] * factor, im.size[0]),
-            min(b[3] * factor, im.size[1]),
+            max(0, b[0] * factor - factor),
+            max(0, b[1] * factor - factor),
+            min(b[2] * factor + factor, width),
+            min(b[3] * factor + factor, height),
         )
         for b in boxes
     ]
     return full, small, factor, mask
+
+
+def as_pil(arr: np.ndarray) -> Image.Image:
+    """A piece as a PIL image in the sheet's own colour space -- Pillow still
+    does the writing, so the files are byte-for-byte what they always were."""
+    arr = np.ascontiguousarray(arr)
+    if arr.ndim == 2:
+        return Image.fromarray(arr, "L")
+    if arr.shape[2] >= 4:
+        return Image.fromarray(arr[:, :, :4], "CMYK")
+    return Image.fromarray(arr[:, :, :3], "RGB")
+
+
+def as_rgb(arr: np.ndarray) -> Image.Image:
+    """A viewable RGB image from whatever the sheet's colour space is."""
+    arr = np.ascontiguousarray(arr)
+    if arr.ndim == 2:
+        return Image.fromarray(arr, "L").convert("RGB")
+    if arr.shape[2] >= 4:
+        return Image.fromarray(arr[:, :, :4], "CMYK").convert("RGB")
+    return Image.fromarray(arr[:, :, :3], "RGB")
 
 
 def mask_path(root: Path, sheet: str) -> Path:
@@ -367,10 +440,10 @@ def load_font(size: int):
         return ImageFont.load_default()
 
 
-def build_preview(small: Image.Image, boxes: list, factor: int, out: Path) -> str:
+def build_preview(small, boxes: list, factor: int, out: Path) -> str:
     """The whole sheet with numbered boxes drawn on. This is the check, and it
     happens on screen -- nothing lands in the pieces folder to be tidied up."""
-    canvas = small.convert("RGB")
+    canvas = as_rgb(small)
     scale = max(1, min(2, 1400 // max(1, max(canvas.size))))
     if scale > 1:
         canvas = canvas.resize((canvas.size[0] * scale, canvas.size[1] * scale))
@@ -457,78 +530,65 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
                     shutil.rmtree(old)
             except Exception as exc:
                 log.warning("could not replace %s: %s", old, exc)
-        # One decode, and one only. Everything downstream works from this copy:
+        # One decode, and one only. Everything downstream works from that array:
         # cropping straight from the file would re-decompress the sheet per piece.
         step("reading sheet", 0.05)
-        with Image.open(sheet) as opened:
-            dpi = sheet_dpi(opened, s.default_dpi)
-            icc = opened.info.get("icc_profile")
-            im = opened
-            im.load()
+        arr, dpi, icc = read_sheet(sheet, s)
+        height, width = arr.shape[:2]
+        res.dpi = dpi[0]
+        try:
+            size_mb = sheet.stat().st_size / 1e6
+        except OSError:
+            size_mb = 0
+        log.info("%s: %sx%s, %s channels @ %.0f dpi, %.0fMB on disk, read in %.1fs",
+                 sheet.name, width, height,
+                 1 if arr.ndim == 2 else arr.shape[2], dpi[0], size_mb,
+                 time.time() - started)
 
-            if dpi == (s.default_dpi, s.default_dpi) and not opened.info.get("dpi"):
-                res.warnings.append(
-                    f"sheet has no resolution tag; assuming {s.default_dpi:g} dpi"
+        step("finding pieces", 0.35)
+        boxes, small, factor, mask = detect_pieces(arr, s, dpi)
+        save_mask(mask, mask_path(work_dir(), str(sheet)))
+
+        # Drawn now rather than at the end: finding the pieces is quick, writing
+        # them is not, so the numbered preview goes on screen while the cutting
+        # is still running.
+        res.preview = build_preview(
+            small, boxes, factor, work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png")
+        if on_preview:
+            on_preview(res.preview, len(boxes))
+        del mask
+
+        if not boxes:
+            res.message = "no pieces found"
+            res.seconds = time.time() - started
+            return res
+
+        step(f"cutting {len(boxes)} pieces", 0.45)
+        folder = unique_folder(pieces_base(sheet, s), f"{sheet.stem} pieces")
+        folder.mkdir(parents=True, exist_ok=True)
+        pad = max(2, len(str(len(boxes))))
+        mx, my = round(s.margin_in * dpi[0]), round(s.margin_in * dpi[1])
+
+        for i, b in enumerate(boxes, 1):
+            box = (max(0, b[0] - mx), max(0, b[1] - my),
+                   min(width, b[2] + mx), min(height, b[3] + my))
+            out = folder / f"{sheet.stem}_{i:0{pad}d}.tif"
+            piece = as_pil(arr[box[1]:box[3], box[0]:box[2]])
+            save_kwargs = dict(compression=s.compression, dpi=dpi)
+            if icc:
+                save_kwargs["icc_profile"] = icc
+            piece.save(out, "TIFF", **save_kwargs)
+            piece.close()
+            res.pieces.append(
+                Piece(
+                    index=i,
+                    path=str(out),
+                    box_px=box,
+                    width_in=round((box[2] - box[0]) / dpi[0], 3),
+                    height_in=round((box[3] - box[1]) / dpi[1], 3),
                 )
-
-            res.dpi = dpi[0]
-            try:
-                size_mb = sheet.stat().st_size / 1e6
-            except OSError:
-                size_mb = 0
-            log.info("%s: %sx%s %s @ %.0f dpi, %s on disk %.0fMB, read in %.1fs",
-                     sheet.name, im.size[0], im.size[1], im.mode, dpi[0],
-                     opened.info.get("compression", "?"), size_mb,
-                     time.time() - started)
-
-            step("finding pieces", 0.35)
-            boxes, small, factor, mask = detect_pieces(im, s, dpi)
-            save_mask(mask, mask_path(work_dir(), str(sheet)))
-
-            # Drawn now rather than at the end: finding the pieces is quick,
-            # writing them is not, so the numbered preview goes on screen while
-            # the cutting is still running.
-            res.preview = build_preview(
-                small, boxes, factor,
-                work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png")
-            if on_preview:
-                on_preview(res.preview, len(boxes))
-
-            if not boxes:
-                res.message = "no pieces found"
-                res.seconds = time.time() - started
-                return res
-
-            step(f"cutting {len(boxes)} pieces", 0.45)
-            folder = unique_folder(pieces_base(sheet, s), f"{sheet.stem} pieces")
-            folder.mkdir(parents=True, exist_ok=True)
-            pad = max(2, len(str(len(boxes))))
-            mx, my = round(s.margin_in * dpi[0]), round(s.margin_in * dpi[1])
-
-            for i, b in enumerate(boxes, 1):
-                box = (
-                    max(0, b[0] - mx),
-                    max(0, b[1] - my),
-                    min(im.size[0], b[2] + mx),
-                    min(im.size[1], b[3] + my),
-                )
-                out = folder / f"{sheet.stem}_{i:0{pad}d}.tif"
-                piece = im.crop(box)
-                save_kwargs = dict(compression=s.compression, dpi=dpi)
-                if icc:
-                    save_kwargs["icc_profile"] = icc
-                piece.save(out, "TIFF", **save_kwargs)
-                piece.close()
-                res.pieces.append(
-                    Piece(
-                        index=i,
-                        path=str(out),
-                        box_px=box,
-                        width_in=round((box[2] - box[0]) / dpi[0], 3),
-                        height_in=round((box[3] - box[1]) / dpi[1], 3),
-                    )
-                )
-                step(f"cutting piece {i} of {len(boxes)}", 0.45 + 0.5 * i / len(boxes))
+            )
+            step(f"cutting piece {i} of {len(boxes)}", 0.45 + 0.5 * i / len(boxes))
 
         res.folder = str(folder)
         res.ok = True

@@ -36,7 +36,7 @@ jobs:
           --icon sheetsplit/assets/icon.icns
           --add-data "sheetsplit/assets:assets"
           --collect-all numpy --collect-all scipy --collect-all PIL
-          --collect-all tkinterdnd2
+          --collect-all tkinterdnd2 --collect-all imagecodecs --collect-all tifffile
           --exclude-module matplotlib --exclude-module pytest
           --exclude-module pandas --exclude-module IPython
           sheet_splitter.py
