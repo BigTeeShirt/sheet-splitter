@@ -215,6 +215,7 @@ class App(ttk.Frame):
         except Exception:
             pass
 
+        self._build_menu()
         self._build_header()
 
         # Load the list up first, then press Start -- nothing runs on its own.
@@ -226,9 +227,6 @@ class App(ttk.Frame):
         self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
         self.clear_btn.pack(side="left", padx=(10, 0))
         self.clear_btn.enable(False)
-        Button(toolbar, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
-        Button(toolbar, "Save diagnostics", self.save_diagnostics,
-               pad=(14, 8)).pack(side="right", padx=(0, 10))
 
         tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(14, 0))
 
@@ -268,6 +266,45 @@ class App(ttk.Frame):
                 body.sashpos(0, int(width * 0.45))
         except Exception:
             pass
+
+    def _build_menu(self):
+        """The things that are not part of the job itself live in the menu bar,
+        where a Mac user looks for them, rather than taking up room next to the
+        buttons that do the work."""
+        menubar = tk.Menu(self.master)
+
+        sheets = tk.Menu(menubar, tearoff=0)
+        sheets.add_command(label="Add sheets…", accelerator="Cmd+O",
+                           command=self.choose_files)
+        sheets.add_command(label="Add a folder…", accelerator="Cmd+Shift+O",
+                           command=self.choose_folder)
+        sheets.add_command(label="Choose destination…", accelerator="Cmd+D",
+                           command=self.choose_dest)
+        sheets.add_separator()
+        sheets.add_command(label="Start", accelerator="Cmd+R", command=self.run)
+        sheets.add_command(label="Stop", accelerator="Cmd+.", command=self.cancel)
+        sheets.add_command(label="Clear list", command=self.clear_list)
+        sheets.add_separator()
+        sheets.add_command(label="Save diagnostics…", command=self.save_diagnostics)
+        menubar.add_cascade(label="File", menu=sheets)
+
+        self.master.config(menu=menubar)
+        for key, action in (("<Command-o>", self.choose_files),
+                            ("<Command-O>", self.choose_folder),
+                            ("<Command-d>", self.choose_dest),
+                            ("<Command-r>", self.run),
+                            ("<Command-period>", self.cancel)):
+            self.master.bind_all(key, lambda _e, a=action: a())
+
+        # Settings belongs in the application menu on a Mac, under Cmd+, --
+        # Tk routes both there for us if we claim the standard command.
+        try:
+            self.master.createcommand("tk::mac::ShowPreferences",
+                                      self.open_settings)
+        except Exception:
+            settings = tk.Menu(menubar, tearoff=0)
+            settings.add_command(label="Settings…", command=self.open_settings)
+            menubar.add_cascade(label="Tools", menu=settings)
 
     def _build_header(self):
         header = ttk.Frame(self)
