@@ -101,13 +101,10 @@ class SettingsDialog(tk.Toplevel):
     in without waiting on a new build."""
 
     FIELDS = [
-        ("output_root", "Pieces folder", "where the split files are written"),
         ("margin_in", "Margin outside the line (in)", "keeps the whole cut line"),
         ("min_piece_in", "Smallest piece (in)", "anything shorter is ignored"),
         ("ink_threshold", "Ink threshold (0–255)",
          "raise it if blank media is reading as ink"),
-        ("cleanup_days", "Delete pieces after (days)",
-         "only ever applies to a fixed destination, never to pieces beside a sheet"),
         ("text_scale", "Text size (%)",
          "100 is normal, 130 is noticeably bigger; applies next time you open it"),
         ("diagnostics_dir", "Send diagnostics to",
@@ -135,7 +132,7 @@ class SettingsDialog(tk.Toplevel):
             self.vars[key] = var
             ttk.Entry(frame, textvariable=var, width=42).grid(
                 row=row, column=1, sticky="ew", padx=(14, 0), pady=(10, 0))
-            if key == "output_root":
+            if key == "diagnostics_dir":
                 Button(frame, "Browse", self._browse, pad=(12, 6)).grid(
                     row=row, column=2, padx=(8, 0), pady=(10, 0))
             ttk.Label(frame, text=hint, style="Muted.TLabel").grid(
@@ -150,18 +147,16 @@ class SettingsDialog(tk.Toplevel):
         self.grab_set()
 
     def _browse(self):
-        chosen = filedialog.askdirectory(title="Where should pieces be written?")
+        chosen = filedialog.askdirectory(title="Where should diagnostics go?")
         if chosen:
-            self.vars["output_root"].set(chosen)
+            self.vars["diagnostics_dir"].set(chosen)
 
     def _save(self):
         try:
             s = self.settings
-            s.output_root = self.vars["output_root"].get().strip() or s.output_root
             s.margin_in = max(0.0, float(self.vars["margin_in"].get()))
             s.min_piece_in = max(0.05, float(self.vars["min_piece_in"].get()))
             s.ink_threshold = min(254, max(0, int(float(self.vars["ink_threshold"].get()))))
-            s.cleanup_days = max(0, int(float(self.vars["cleanup_days"].get())))
             s.text_scale = min(200, max(80, int(float(self.vars["text_scale"].get()))))
             s.diagnostics_dir = self.vars["diagnostics_dir"].get().strip()
         except ValueError:
@@ -177,7 +172,7 @@ class App(ttk.Frame):
         super().__init__(master, padding=(18, 14, 18, 16))
         self.master = master
         self.settings = core.Settings.load()
-        core.setup_logging(Path(self.settings.output_root))
+        core.setup_logging()
         # Worth recording: if the native library fails to load, drag-and-drop
         # quietly stops existing and the buttons carry on as if nothing is wrong.
         core.log.info("drag and drop: %s", "available" if DND else "UNAVAILABLE")
@@ -196,11 +191,8 @@ class App(ttk.Frame):
         self._build()
         self.pack(fill="both", expand=True)
         self.after(50, self._pump)
-
-        removed = core.cleanup(Path(self.settings.output_root),
-                               self.settings.cleanup_days)
-        if removed:
-            self._set_status(f"Tidied up {removed} old piece folder(s).")
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+        core.sweep_old_work_dirs()
 
         if argv_paths:  # sheets dragged onto the exe fill the list
             self.add_sheets(core.gather_sheets(argv_paths))
@@ -380,7 +372,7 @@ class App(ttk.Frame):
         SettingsDialog(self.master, self.settings, self._settings_saved)
 
     def _settings_saved(self):
-        core.setup_logging(Path(self.settings.output_root))
+        core.setup_logging()
         self.skip_var.set(self.settings.skip_existing)
         self._set_status("Settings saved.")
 
@@ -390,8 +382,7 @@ class App(ttk.Frame):
         work out what went wrong from a machine that can't see this one."""
         stamp = datetime.datetime.now().strftime("%Y-%m-%d-%H%M")
         try:
-            out = core.build_diagnostics(Path(self.settings.output_root),
-                                         self.results, self.settings, stamp)
+            out = core.build_diagnostics(self.results, self.settings, stamp)
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Could not save diagnostics:\n\n{exc}")
             return
@@ -406,8 +397,8 @@ class App(ttk.Frame):
         r = self._selected()
         if r and r.folder:
             open_in_explorer(r.folder)
-        elif self.results:
-            open_in_explorer(self.settings.output_root)
+        elif self.results and self.results[0].folder:
+            open_in_explorer(str(Path(self.results[0].folder).parent))
 
     # ---------------------------------------------------------------- running
 
@@ -456,6 +447,13 @@ class App(ttk.Frame):
         self.worker.start()
         self._refresh_actions()
 
+    def _on_close(self):
+        """Nothing survives the window closing except the pieces themselves."""
+        self.cancel_flag.set()
+        self._preview_img = None
+        core.discard_work_dir()
+        self.master.destroy()
+
     def _running(self) -> bool:
         return bool(self.worker and self.worker.is_alive())
 
@@ -469,6 +467,10 @@ class App(ttk.Frame):
             self.empty_hint.place(relx=0.5, rely=0.45, anchor="center")
 
     def _clear_preview(self):
+        # ⚠ Clearing the canvas is not enough: any resize redraws from
+        # _preview_path, so the preview reappeared moments after Clear list.
+        self._preview_path = ""
+        self._preview_img = None
         self.canvas.delete("all")
         self.detail.config(text="")
         self.sizes.config(text="")

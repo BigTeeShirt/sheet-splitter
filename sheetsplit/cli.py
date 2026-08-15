@@ -19,7 +19,6 @@ def main(argv=None) -> int:
     ap.add_argument("--min-piece", type=float, help="inches; smaller blobs are ignored")
     ap.add_argument("--threshold", type=int, help="0-255 ink threshold")
     ap.add_argument("--force", action="store_true", help="re-split sheets already done")
-    ap.add_argument("--no-cleanup", action="store_true")
     args = ap.parse_args(argv)
 
     s = core.Settings.load()
@@ -35,10 +34,7 @@ def main(argv=None) -> int:
     if args.force:
         s.skip_existing = False
 
-    root = Path(s.output_root)
-    core.setup_logging(root)
-    if not args.no_cleanup:
-        core.cleanup(root, s.cleanup_days)
+    core.setup_logging()
 
     sheets = core.gather_sheets(args.paths)
     if not sheets:

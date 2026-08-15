@@ -15,6 +15,8 @@ import os
 import platform
 import shutil
 import sys
+import atexit
+import tempfile
 import time
 import zipfile
 from dataclasses import dataclass, asdict, field
@@ -34,7 +36,6 @@ Image.MAX_IMAGE_PIXELS = None
 log = logging.getLogger("sheetsplit")
 
 SHEET_SUFFIXES = {".tif", ".tiff"}
-LEDGER_NAME = "_index.json"
 PREVIEW_DIRNAME = "_previews"
 
 
@@ -46,14 +47,12 @@ class Settings:
     """Everything tunable. Lives in a JSON file so thresholds can be dialled in
     on real patterns without waiting for a new build."""
 
-    settings_version: int = 2
-    output_root: str = ""
+    settings_version: int = 3
     margin_in: float = 0.125          # kept outside the black line, for the laser
     min_piece_in: float = 1.0         # longest side; smaller blobs are specks
     ink_threshold: int = 12           # 0-255; above this a pixel is ink, not media
     close_px: int = 2                 # bridges pinholes in an outline
     detect_max_px: int = 2000         # long edge of the detection copy
-    cleanup_days: int = 0             # 0 disables; off until asked for
     default_dpi: float = 300.0        # only used if the TIFF doesn't say
     compression: str = "tiff_deflate"
     skip_existing: bool = True
@@ -65,10 +64,6 @@ class Settings:
     # Point this at a Synology-synced folder and a diagnostics zip lands
     # somewhere it can be read without anyone emailing a file around.
     diagnostics_dir: str = ""
-
-    def __post_init__(self):
-        if not self.output_root:
-            self.output_root = str(default_output_root())
 
     # -- disk
 
@@ -86,11 +81,8 @@ class Settings:
             data = json.loads(cls.path().read_text())
             known = {f for f in cls.__dataclass_fields__}
             s = cls(**{k: v for k, v in data.items() if k in known})
-            if data.get("settings_version", 1) < 2:
-                # Auto-delete is off until it is actually wanted; don't leave it
-                # switched on just because an older settings file said so.
-                s.cleanup_days = 0
-                s.settings_version = 2
+            if data.get("settings_version", 1) < 3:
+                s.settings_version = 3
                 s.save()
             return s
         except Exception:
@@ -111,18 +103,69 @@ def pieces_base(sheet: Path, s: Settings) -> Path:
     """
     if s.dest_mode == "beside":
         return sheet.parent
-    return Path(s.dest_dir) if s.dest_dir else Path(s.output_root)
+    return Path(s.dest_dir) if s.dest_dir else sheet.parent
 
 
-def default_output_root() -> Path:
-    """The app's own folder: the log, previews, ink masks and the index of what
-    has been split. The pieces themselves go wherever `dest_mode` says.
+def app_data_dir() -> Path:
+    """The standard per-user spot for the settings file and the rolling log.
 
-    ⚠ Only folders under here are ever auto-deleted. Pieces written beside a
-    sheet sit in the user's own directories and are never touched again."""
+    Not a folder anyone has to look at or tidy up -- the point is that the app
+    leaves nothing lying around in the places people actually work."""
     if sys.platform == "win32":
-        return Path(os.environ.get("SystemDrive", "C:")) / os.sep / "Sheet Pieces"
-    return Path.home() / "Sheet Pieces"
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SheetSplitter"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "SheetSplitter"
+    else:
+        base = Path.home() / ".local" / "share" / "sheetsplit"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def default_diagnostics_dir() -> Path:
+    """Somewhere findable. A diagnostics zip only appears when it is asked for,
+    so it goes where it can be picked up rather than into a hidden folder."""
+    desktop = Path.home() / "Desktop"
+    return desktop if desktop.is_dir() else Path.home()
+
+
+_WORK_DIR = None
+
+
+def work_dir() -> Path:
+    """Scratch for previews and ink masks, in the system temp area and thrown
+    away when the app closes. Nothing here outlives a session."""
+    global _WORK_DIR
+    if _WORK_DIR is None or not Path(_WORK_DIR).exists():
+        _WORK_DIR = Path(tempfile.mkdtemp(prefix="sheetsplit-"))
+    return Path(_WORK_DIR)
+
+
+def discard_work_dir() -> None:
+    global _WORK_DIR
+    if _WORK_DIR:
+        shutil.rmtree(_WORK_DIR, ignore_errors=True)
+        _WORK_DIR = None
+
+
+def sweep_old_work_dirs(hours: int = 12) -> int:
+    """Clear scratch left by a session that was killed rather than closed.
+
+    Only ever touches directories this program named, inside the system temp
+    area -- so it cannot reach anything of anyone else's."""
+    removed, cutoff = 0, time.time() - hours * 3600
+    try:
+        for path in Path(tempfile.gettempdir()).glob("sheetsplit-*"):
+            if path.is_dir() and path.stat().st_mtime < cutoff:
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
+    except Exception as exc:
+        log.warning("could not sweep old scratch: %s", exc)
+    return removed
+
+
+# Whatever ends the process -- closing the window, finishing a command, an
+# unhandled error -- the scratch goes with it.
+atexit.register(discard_work_dir)
 
 
 # ---------------------------------------------------------------- results
@@ -361,76 +404,25 @@ def build_preview(small: Image.Image, boxes: list, factor: int, out: Path) -> st
     return str(out)
 
 
-# ---------------------------------------------------------------- ledger
+# ------------------------------------------------------- already split?
 
 
-def _ledger_path(root: Path) -> Path:
-    return root / LEDGER_NAME
+def already_split(sheet: Path, s: Settings) -> Path | None:
+    """Has this sheet already been split, and is the result still newer than it?
 
-
-def read_ledger(root: Path) -> dict:
-    try:
-        return json.loads(_ledger_path(root).read_text())
-    except Exception:
-        return {}
-
-
-def write_ledger(root: Path, data: dict) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    try:
-        _ledger_path(root).write_text(json.dumps(data, indent=2))
-    except Exception as exc:  # never fail a split over bookkeeping
-        log.warning("could not write ledger: %s", exc)
-
-
-def cleanup(root: Path, days: int) -> int:
-    """Delete piece folders older than `days`. Only ever touches folders this
-    program recorded creating, under its own output root -- it cannot eat
-    anything of the user's, even if the output root is set somewhere odd."""
-    if days <= 0 or not root.exists():
-        return 0
-    ledger, cutoff, removed = read_ledger(root), time.time() - days * 86400, 0
-    for key, entry in list(ledger.items()):
-        if entry.get("finished", 0) >= cutoff:
-            continue
-        folder = Path(entry.get("folder", ""))
-        try:
-            # ⚠ Never delete pieces written beside a sheet -- those live in the
-            # user's own folders, quite possibly on the NAS.
-            if folder.exists() and folder.resolve().parent != root.resolve():
-                continue
-            if folder.exists():
-                shutil.rmtree(folder)
-                removed += 1
-            for extra in (Path(entry.get("preview", "")),
-                          mask_path(root, entry.get("sheet", ""))):
-                if extra.exists() and extra.parent.name == PREVIEW_DIRNAME:
-                    extra.unlink()
-        except Exception as exc:
-            log.warning("cleanup skipped %s: %s", folder, exc)
-            continue
-        ledger.pop(key, None)
-    if removed:
-        write_ledger(root, ledger)
-        log.info("cleanup removed %s folder(s) older than %s days", removed, days)
-    return removed
-
-
-def existing_split(root: Path, sheet: Path) -> dict | None:
-    """Was this exact sheet already split, and is the result still on disk and
-    still newer than the sheet? Saves re-downloading gigabytes from the NAS."""
-    entry = read_ledger(root).get(str(sheet).lower())
-    if not entry:
-        return None
-    folder = Path(entry.get("folder", ""))
-    if not folder.exists() or not any(folder.glob("*.tif")):
+    Asks the filesystem rather than keeping an index of its own. One less file
+    to leave behind, and it cannot disagree with what is actually on disk.
+    """
+    folder = pieces_base(sheet, s) / f"{sheet.stem} pieces"
+    if not folder.is_dir() or not any(folder.glob("*.tif")):
         return None
     try:
-        if sheet.stat().st_mtime > entry.get("finished", 0):
+        newest = max(p.stat().st_mtime for p in folder.glob("*.tif"))
+        if sheet.stat().st_mtime > newest:
             return None
     except OSError:
         return None
-    return entry
+    return folder
 
 
 # ---------------------------------------------------------------- splitting
@@ -450,7 +442,6 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
     `cancel()` returning True aborts between steps."""
     started = time.time()
     res = SheetResult(sheet=str(sheet))
-    root = Path(s.output_root)
 
     def step(text, frac):
         if cancel and cancel():
@@ -459,25 +450,22 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
             on_step(text, frac)
 
     try:
-        prior = existing_split(root, sheet)
+        prior = already_split(sheet, s)
         if prior and not s.skip_existing:
             # Deliberately splitting it again: replace the old folder rather than
             # leaving a "(2)" beside it for someone to pick the wrong one from.
-            old = Path(prior.get("folder", ""))
+            old = prior
             try:
                 if old.exists() and old.name.startswith(sheet.stem):
                     shutil.rmtree(old)
             except Exception as exc:
                 log.warning("could not replace %s: %s", old, exc)
-        if s.skip_existing:
-            if prior:
-                res.ok, res.skipped = True, True
-                res.folder, res.preview = prior.get("folder", ""), prior.get("preview", "")
-                res.pieces = [Piece(**p) for p in prior.get("pieces", [])]
-                res.dpi = prior.get("dpi", 0.0)
-                res.message = "already split"
-                res.seconds = time.time() - started
-                return res
+        if s.skip_existing and prior:
+            res.ok, res.skipped = True, True
+            res.folder = str(prior)
+            res.message = f"already split — {len(list(prior.glob('*.tif')))} pieces"
+            res.seconds = time.time() - started
+            return res
 
         # One decode, and one only. Everything downstream works from this copy:
         # cropping straight from the file would re-decompress the sheet per piece.
@@ -505,11 +493,11 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
 
             step("finding pieces", 0.35)
             boxes, small, factor, mask = detect_pieces(im, s, dpi)
-            save_mask(mask, mask_path(root, str(sheet)))
+            save_mask(mask, mask_path(work_dir(), str(sheet)))
             if not boxes:
                 res.message = "no pieces found"
                 res.preview = build_preview(
-                    small, [], factor, root / PREVIEW_DIRNAME / f"{sheet.stem}.png"
+                    small, [], factor, work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png"
                 )
                 res.seconds = time.time() - started
                 return res
@@ -547,23 +535,13 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
 
             step("drawing preview", 0.97)
             res.preview = build_preview(
-                small, boxes, factor, root / PREVIEW_DIRNAME / f"{sheet.stem}.png"
+                small, boxes, factor, work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png"
             )
 
         res.folder = str(folder)
         res.ok = True
         res.seconds = time.time() - started
 
-        ledger = read_ledger(root)
-        ledger[str(sheet).lower()] = {
-            "sheet": str(sheet),
-            "folder": res.folder,
-            "preview": res.preview,
-            "dpi": res.dpi,
-            "finished": time.time(),
-            "pieces": [asdict(p) for p in res.pieces],
-        }
-        write_ledger(root, ledger)
         log.info("%s: %s pieces in %.1fs", sheet.name, res.count, res.seconds)
         return res
 
@@ -616,10 +594,11 @@ def gather_sheets(paths) -> list:
     return unique
 
 
-def setup_logging(root: Path) -> None:
+def setup_logging(root: Path = None) -> None:
     """Rotating, so it survives months of use without becoming a 400MB file
     nobody can send anywhere."""
     try:
+        root = Path(root) if root else app_data_dir()
         root.mkdir(parents=True, exist_ok=True)
         handler = RotatingFileHandler(root / "sheet-splitter.log", maxBytes=2_000_000,
                                       backupCount=3, encoding="utf-8")
@@ -649,7 +628,7 @@ def system_report() -> list:
     except Exception:
         pass
     try:  # free space matters: sheets hydrate from the NAS onto a small SSD
-        usage = shutil.disk_usage(default_output_root().anchor)
+        usage = shutil.disk_usage(Path.home().anchor)
         lines.append(f"disk free {usage.free / 1e9:.0f}GB of {usage.total / 1e9:.0f}GB")
     except Exception:
         pass
@@ -678,15 +657,15 @@ def system_report() -> list:
     return lines
 
 
-def build_diagnostics(root: Path, results: list, s: Settings,
-                      stamp: str, into: Path | None = None) -> Path:
+def build_diagnostics(results: list, s: Settings, stamp: str,
+                      into: Path | None = None) -> Path:
     """One zip to send when something looks wrong.
 
     Deliberately holds the small things that explain a bad split -- the log, the
     settings, the numbered preview and the ink mask detection actually worked
     from -- and never the sheet itself, which is gigabytes.
     """
-    target_dir = into or Path(s.diagnostics_dir or root)
+    target_dir = into or Path(s.diagnostics_dir or default_diagnostics_dir())
     target_dir.mkdir(parents=True, exist_ok=True)
     out = target_dir / f"sheet-splitter-diagnostics-{stamp}.zip"
 
@@ -713,14 +692,11 @@ def build_diagnostics(root: Path, results: list, s: Settings,
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("summary.json", json.dumps(summary, indent=2))
         for name in ("sheet-splitter.log", "sheet-splitter.log.1"):
-            p = root / name
+            p = app_data_dir() / name
             if p.exists():
                 z.write(p, name)
-        ledger = _ledger_path(root)
-        if ledger.exists():
-            z.write(ledger, "index.json")
         for r in results:  # the pictures that explain a bad split
-            for path, label in ((r.preview, "preview"), (mask_path(root, r.sheet), "mask")):
+            for path, label in ((r.preview, "preview"), (mask_path(work_dir(), r.sheet), "mask")):
                 p = Path(path) if path else None
                 if p and p.exists():
                     z.write(p, f"{label}/{p.name}")

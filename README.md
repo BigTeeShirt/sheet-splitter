@@ -31,8 +31,17 @@ up to the NAS** — roughly another sheet's worth per sheet. If that becomes a
 problem, point the destination at a local folder; pieces regenerate in seconds
 from a sheet you still have.
 
-⚠ The 14-day cleanup **only ever applies to a fixed destination**. Pieces
-written beside a sheet are in your own folders and are never deleted.
+**It leaves nothing behind.** The pieces are the only thing written where you
+can see them. Previews and ink masks are temporary and go when the window
+closes — including after a crash, since it clears its own leftovers on the next
+launch. Settings and a small rolling log live in the standard per-user app
+folder (`%LOCALAPPDATA%\SheetSplitter`, or `~/Library/Application Support/`).
+
+Nothing is auto-deleted, ever.
+
+⚠ If an earlier version left a **`Sheet Pieces` folder** in your home directory
+or on `C:\`, nothing uses it any more — check it for pieces you still want and
+then bin it.
 
 Windows will warn once that it doesn't recognise the app — **More info → Run
 anyway**. That is what an unsigned exe looks like; a signing certificate costs a
@@ -50,7 +59,6 @@ Everything worth adjusting is under **Settings**:
 | Ink threshold | Blank media reads as ink (whole sheet found as one piece) — raise it. A pale piece is missed — lower it. |
 | Smallest piece | Registration marks becoming files — raise it. A small piece missed — lower it. |
 | Margin outside the line | Cut line looks tight against the edge of a piece. |
-| Delete pieces after | 0 keeps them forever. Never touches pieces beside a sheet. |
 | Text size | 130 makes everything noticeably bigger. Applies next time you open it. |
 
 ### When it needs looking at from somewhere else
@@ -63,7 +71,9 @@ It never includes the sheets themselves.
 Set **Send diagnostics to** in Settings to a Synology-synced folder and the zip
 lands somewhere it can be read without anyone emailing a file around.
 
-The rolling log lives at `C:\Sheet Pieces\sheet-splitter.log`. It records the
+The zip is written to the **Desktop** unless *Send diagnostics to* says
+otherwise. The rolling log it contains lives in the app folder above, and
+records the
 app version, the machine, free disk, each sheet's dimensions, colour mode, DPI
 and compression, and for every sheet how many blobs were found, how many were
 dropped for being too small, how many were inside another piece, and how many
@@ -72,7 +82,6 @@ became files.
 ## On a Mac
 
 `Sheet Splitter.app` does the same job, with the same destination rules.
-Its log and previews live in `~/Sheet Pieces/`.
 
 ⚠ **A copy downloaded from the releases page is quarantined by macOS** and will
 say it's damaged rather than that it's unsigned. Clear it once:

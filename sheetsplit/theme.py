@@ -210,12 +210,14 @@ class Check(tk.Canvas):
 class Button(tk.Canvas):
     """A rounded slab, because ttk cannot round a corner.
 
-    Variants are roles, not colours -- `primary` is THE one main action on the
-    window and nothing else is pink; everything else is `secondary`, the
-    bordered base button.
+    Anthony asked for every button pink, so `primary` is the default and the
+    bordered `secondary` is left in for anything that should step back later.
+
+    ⚠ The near-black text on the pink is not a style choice and stays whatever
+    the buttons do: measured 5.35:1 against white's 3.53:1, on a 4.5 threshold.
     """
 
-    def __init__(self, parent, text, command=None, variant="secondary",
+    def __init__(self, parent, text, command=None, variant="primary",
                  pad=(18, 11), radius=7, bg=WINDOW):
         self.variant, self.canvas_bg = variant, bg
         self.radius = px(radius)
