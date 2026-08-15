@@ -268,43 +268,22 @@ class App(ttk.Frame):
             pass
 
     def _build_menu(self):
-        """The things that are not part of the job itself live in the menu bar,
-        where a Mac user looks for them, rather than taking up room next to the
-        buttons that do the work."""
+        """One dropdown, for the two things that are not part of the job itself.
+        Everything that does work stays on the window as a button."""
         menubar = tk.Menu(self.master)
-
-        sheets = tk.Menu(menubar, tearoff=0)
-        sheets.add_command(label="Add sheets…", accelerator="Cmd+O",
-                           command=self.choose_files)
-        sheets.add_command(label="Add a folder…", accelerator="Cmd+Shift+O",
-                           command=self.choose_folder)
-        sheets.add_command(label="Choose destination…", accelerator="Cmd+D",
-                           command=self.choose_dest)
-        sheets.add_separator()
-        sheets.add_command(label="Start", accelerator="Cmd+R", command=self.run)
-        sheets.add_command(label="Stop", accelerator="Cmd+.", command=self.cancel)
-        sheets.add_command(label="Clear list", command=self.clear_list)
-        sheets.add_separator()
-        sheets.add_command(label="Save diagnostics…", command=self.save_diagnostics)
-        menubar.add_cascade(label="File", menu=sheets)
-
+        settings = tk.Menu(menubar, tearoff=0)
+        settings.add_command(label="Settings…", accelerator="Cmd+,",
+                             command=self.open_settings)
+        settings.add_command(label="Save diagnostics…",
+                             command=self.save_diagnostics)
+        menubar.add_cascade(label="Settings", menu=settings)
         self.master.config(menu=menubar)
-        for key, action in (("<Command-o>", self.choose_files),
-                            ("<Command-O>", self.choose_folder),
-                            ("<Command-d>", self.choose_dest),
-                            ("<Command-r>", self.run),
-                            ("<Command-period>", self.cancel)):
-            self.master.bind_all(key, lambda _e, a=action: a())
-
-        # Settings belongs in the application menu on a Mac, under Cmd+, --
-        # Tk routes both there for us if we claim the standard command.
-        try:
+        self.master.bind_all("<Command-comma>", lambda _e: self.open_settings())
+        try:  # macOS puts Preferences in the application menu as well
             self.master.createcommand("tk::mac::ShowPreferences",
                                       self.open_settings)
         except Exception:
-            settings = tk.Menu(menubar, tearoff=0)
-            settings.add_command(label="Settings…", command=self.open_settings)
-            menubar.add_cascade(label="Tools", menu=settings)
+            pass
 
     def _build_header(self):
         header = ttk.Frame(self)
