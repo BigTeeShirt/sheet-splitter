@@ -525,9 +525,12 @@ class App(ttk.Frame):
                          f"Sheet {n} of {len(sheets)} — {sheet.name}: {text}",
                          overall))
 
+                def preview_ready(path, count, sheet=sheet):
+                    self.events.put(("preview", (str(sheet), path, count), None))
+
                 try:
                     r = core.split_sheet(sheet, self.settings, step,
-                                         self.cancel_flag.is_set)
+                                         self.cancel_flag.is_set, preview_ready)
                 except core.Cancelled:
                     break
                 except Exception:
@@ -551,6 +554,9 @@ class App(ttk.Frame):
                     self.progress["value"] = b * 1000
                 elif kind == "row":
                     self.tree.item(a, text="⋯   " + Path(a).name)
+                    self.tree.selection_set(a)   # so its preview shows as it lands
+                elif kind == "preview":
+                    self._preview_ready(*a)
                 elif kind == "result":
                     self._show_result(a)
                 elif kind == "finished":
@@ -561,6 +567,14 @@ class App(ttk.Frame):
         except queue.Empty:
             pass
         self.after(60, self._pump)
+
+    def _preview_ready(self, sheet: str, path: str, count: int):
+        """The pieces have been found; they are still being written. Showing it
+        now means the count can be checked without waiting for the cutting."""
+        if self.tree.exists(sheet):
+            self.tree.item(sheet, values=(count, "cutting…"))
+        if not self.tree.selection() or self.tree.selection()[0] == sheet:
+            self._draw_preview(path)
 
     def _show_result(self, r: core.SheetResult):
         self.results.append(r)

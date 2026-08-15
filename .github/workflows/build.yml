@@ -71,12 +71,12 @@ jobs:
           }
           $out = "test-sheet\Synthetic-Pattern-M pieces"   # pieces land beside the sheet
           if (-not (Test-Path $out)) {
-            Get-Content "$env:SystemDrive\Sheet Pieces\sheet-splitter.log" -ErrorAction SilentlyContinue
+            Get-Content "$env:LOCALAPPDATA\SheetSplitter\sheet-splitter.log" -ErrorAction SilentlyContinue
             throw "the app ran but wrote no pieces to $out"
           }
           python tools/check_split.py "$out" 12
           if ($LASTEXITCODE -ne 0) { throw "the exe's own split did not check out" }
-          Get-Content "$env:SystemDrive\Sheet Pieces\sheet-splitter.log"
+          Get-Content "$env:LOCALAPPDATA\SheetSplitter\sheet-splitter.log" -ErrorAction SilentlyContinue
           Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue | Stop-Process -Force
 
       - uses: actions/upload-artifact@v4
@@ -137,12 +137,12 @@ jobs:
           screencapture -x shots/app.png || echo "no display to capture"
           out="$PWD/test-sheet/Synthetic-Pattern-M pieces"   # pieces land beside the sheet
           if [ ! -d "$out" ]; then
-            cat "$HOME/Sheet Pieces/sheet-splitter.log" 2>/dev/null || true
+            cat "$HOME/Library/Application Support/SheetSplitter/sheet-splitter.log" 2>/dev/null || true
             echo "the app ran but wrote no pieces to $out"
             exit 1
           fi
           python tools/check_split.py "$out" 12
-          cat "$HOME/Sheet Pieces/sheet-splitter.log"
+          cat "$HOME/Library/Application Support/SheetSplitter/sheet-splitter.log" 2>/dev/null || true
           pkill -f "Sheet Splitter" || true
 
       # Zipped with ditto to keep the bundle's symlinks and permissions --

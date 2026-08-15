@@ -437,9 +437,15 @@ def unique_folder(root: Path, name: str) -> Path:
     return folder
 
 
-def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetResult:
-    """Split one sheet. `on_step(text, fraction)` drives the progress bar;
-    `cancel()` returning True aborts between steps."""
+def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
+                on_preview=None) -> SheetResult:
+    """Split one sheet.
+
+    `on_step(text, fraction)` drives the progress bar, `cancel()` returning True
+    aborts between steps, and `on_preview(path, count)` fires as soon as the
+    pieces have been *found* -- well before they have all been written, so the
+    count can be checked while the cutting is still going on.
+    """
     started = time.time()
     res = SheetResult(sheet=str(sheet))
 
@@ -494,11 +500,18 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
             step("finding pieces", 0.35)
             boxes, small, factor, mask = detect_pieces(im, s, dpi)
             save_mask(mask, mask_path(work_dir(), str(sheet)))
+
+            # Drawn now rather than at the end: finding the pieces is quick,
+            # writing them is not, so the numbered preview goes on screen while
+            # the cutting is still running.
+            res.preview = build_preview(
+                small, boxes, factor,
+                work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png")
+            if on_preview:
+                on_preview(res.preview, len(boxes))
+
             if not boxes:
                 res.message = "no pieces found"
-                res.preview = build_preview(
-                    small, [], factor, work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png"
-                )
                 res.seconds = time.time() - started
                 return res
 
@@ -532,11 +545,6 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None) -> SheetRes
                     )
                 )
                 step(f"cutting piece {i} of {len(boxes)}", 0.45 + 0.5 * i / len(boxes))
-
-            step("drawing preview", 0.97)
-            res.preview = build_preview(
-                small, boxes, factor, work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png"
-            )
 
         res.folder = str(folder)
         res.ok = True
