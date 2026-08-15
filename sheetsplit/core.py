@@ -32,7 +32,7 @@ try:  # decodes a striped TIFF across every core; Pillow uses one
 except Exception:       # falls back to Pillow, just slower
     tifffile = None
 
-from . import __version__
+from . import __build__, __version__
 from scipy import ndimage
 
 # Print-resolution sheets are hundreds of megapixels. Pillow's decompression-bomb
@@ -64,7 +64,7 @@ class Settings:
     # Where the pieces land. Must be chosen before anything can run -- there is
     # deliberately no default, so nobody discovers later that a batch went
     # somewhere they did not expect.
-    dest_dir: str = ""
+    dest_dir: str = ""       # ⚠ never saved; see save()
     text_scale: int = 100
     # Point this at a Synology-synced folder and a diagnostics zip lands
     # somewhere it can be read without anyone emailing a file around.
@@ -94,9 +94,16 @@ class Settings:
             return cls()
 
     def save(self) -> None:
+        """⚠ dest_dir is deliberately left out.
+
+        Remembering it would give the app a default destination, and the whole
+        point of requiring one is that nobody runs a batch into a folder they
+        did not think about. It has to be chosen every time the app opens.
+        """
         p = self.path()
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(asdict(self), indent=2))
+        data = {k: v for k, v in asdict(self).items() if k != "dest_dir"}
+        p.write_text(json.dumps(data, indent=2))
 
 
 def pieces_base(sheet: Path, s: Settings) -> Path:
@@ -501,6 +508,25 @@ def unique_folder(root: Path, name: str) -> Path:
     return folder
 
 
+def scan_sheet(sheet: Path, s: Settings):
+    """Look at a sheet and draw its preview, without writing anything.
+
+    Runs the moment a sheet is added, so the numbered preview and the piece
+    count are on screen before anyone decides to press Start -- and before a
+    destination has even been chosen. Costs one read and a detection pass;
+    on a 2GB sheet that is well under a second.
+    """
+    started = time.time()
+    arr, dpi, _ = read_sheet(sheet, s)
+    boxes, small, factor, mask = detect_pieces(arr, s, dpi)
+    save_mask(mask, mask_path(work_dir(), str(sheet)))
+    preview = build_preview(small, boxes, factor,
+                            work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png")
+    log.info("scanned %s: %s pieces in %.1fs", sheet.name, len(boxes),
+             time.time() - started)
+    return preview, len(boxes)
+
+
 def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
                 on_preview=None) -> SheetResult:
     """Split one sheet.
@@ -659,7 +685,7 @@ def setup_logging(root: Path = None) -> None:
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     log.setLevel(logging.INFO)
     log.handlers[:] = [handler]
-    log.info("--- Sheet Splitter %s started ---", __version__)
+    log.info("--- Sheet Splitter %s (build %s) started ---", __version__, __build__)
     for line in system_report():
         log.info("  %s", line)
 
@@ -667,7 +693,7 @@ def setup_logging(root: Path = None) -> None:
 def system_report() -> list:
     """Everything I'd otherwise have to ask about over chat."""
     lines = [
-        f"version {__version__}",
+        f"version {__version__} build {__build__}",
         f"python {sys.version.split()[0]} ({'frozen exe' if getattr(sys, 'frozen', False) else 'source'})",
         f"platform {platform.platform()}",
         f"machine {platform.machine()}, cpus {os.cpu_count()}",

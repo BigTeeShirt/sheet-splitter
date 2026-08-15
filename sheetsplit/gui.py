@@ -182,6 +182,9 @@ class App(ttk.Frame):
         self.results: list = []
         self.queue: list = []          # sheets waiting for Start
         self.queue_keys: set = set()
+        self.scan_queue: list = []     # sheets waiting to be looked at
+        self.scan_thread = None
+        self.previews: dict = {}       # sheet -> (preview path, piece count)
         self.events: queue.Queue = queue.Queue()
         self.worker: threading.Thread | None = None
         self.cancel_flag = threading.Event()
@@ -217,7 +220,11 @@ class App(ttk.Frame):
         # Load the list up first, then press Start -- nothing runs on its own.
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(16, 0))
-        Button(toolbar, "Add sheets…", self.choose_files).pack(side="left")
+        self.choose_dest_btn = Button(toolbar, "Choose destination…",
+                                      self.choose_dest)
+        self.choose_dest_btn.pack(side="left")
+        Button(toolbar, "Add sheets…", self.choose_files).pack(
+            side="left", padx=(10, 0))
         Button(toolbar, "Add a folder…", self.choose_folder).pack(
             side="left", padx=(10, 0))
         self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
@@ -227,21 +234,12 @@ class App(ttk.Frame):
         Button(toolbar, "Save diagnostics", self.save_diagnostics,
                pad=(14, 8)).pack(side="right", padx=(0, 10))
 
-        # The destination gets its own centred band. It has to be chosen before
-        # anything can run, so it should not be crowded in with everything else.
-        band = ttk.Frame(self)
-        band.pack(fill="x", pady=(14, 0))
-        middle = ttk.Frame(band)
-        middle.pack(anchor="center")
-        ttk.Label(middle, text="Pieces go to", style="Muted.TLabel").pack(
-            side="left", padx=(0, 12))
-        self.choose_dest_btn = Button(middle, "Choose destination…",
-                                      self.choose_dest)
-        self.choose_dest_btn.pack(side="left")
-        self.dest_label = ttk.Label(middle, text="", style="Muted.TLabel")
-        self.dest_label.pack(side="left", padx=(14, 0))
+        # The destination reads underneath the buttons rather than beside them:
+        # a full path is far too long to sit in a row of controls.
+        self.dest_label = ttk.Label(self, text="", style="Muted.TLabel")
+        self.dest_label.pack(fill="x", pady=(10, 0))
         self._refresh_dest()
-        tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(14, 0))
+        tk.Frame(self, height=1, bg=theme.BORDER_SOFT).pack(fill="x", pady=(12, 0))
 
         body = ttk.Panedwindow(self, orient="horizontal")
         footer = ttk.Frame(self)
@@ -435,15 +433,38 @@ class App(ttk.Frame):
             self.queue.append(sheet)
             self.queue_keys.add(key)
             self.tree.insert("", "end", iid=key, text=f"    {sheet.name}",
-                             values=("", ""))
+                             values=("", "reading…"))
+            self.scan_queue.append(sheet)
+        self._start_scanner()
         self._refresh_actions()
         self._set_status(f"{len(self.queue)} sheet(s) ready — press Start."
                          if self.queue else "Add some sheets, then press Start.")
+
+    def _start_scanner(self):
+        """Look at newly added sheets in the background so their previews are
+        ready before anyone presses Start."""
+        if self.scan_thread and self.scan_thread.is_alive():
+            return
+        self.scan_thread = threading.Thread(target=self._scan_loop, daemon=True)
+        self.scan_thread.start()
+
+    def _scan_loop(self):
+        while self.scan_queue:
+            if self.cancel_flag.is_set():
+                return
+            sheet = self.scan_queue.pop(0)
+            try:
+                preview, count = core.scan_sheet(sheet, self.settings)
+                self.events.put(("scanned", (str(sheet), preview, count), None))
+            except Exception as exc:
+                core.log.exception("could not scan %s", sheet)
+                self.events.put(("scanfail", (str(sheet), str(exc)), None))
 
     def clear_list(self):
         if self._running():
             return
         self.queue, self.queue_keys, self.results = [], set(), []
+        self.scan_queue, self.previews = [], {}
         self.tree.delete(*self.tree.get_children())
         self._clear_preview()
         self.progress["value"] = 0
@@ -509,8 +530,9 @@ class App(ttk.Frame):
     def _refresh_dest(self):
         chosen = bool(self.settings.dest_dir)
         self.dest_label.config(
-            text=f"→  {self.settings.dest_dir}" if chosen
-            else "no destination chosen yet — pieces have nowhere to go",
+            text=f"Pieces go to   {self.settings.dest_dir}" if chosen
+            else "⚠  Choose a destination before starting — it is not remembered "
+                 "between sessions, on purpose",
             style="Muted.TLabel" if chosen else "Warn.TLabel")
 
     def _run(self, sheets: list):
@@ -562,6 +584,14 @@ class App(ttk.Frame):
                     self.tree.selection_set(a)   # so its preview shows as it lands
                 elif kind == "preview":
                     self._preview_ready(*a)
+                elif kind == "scanned":
+                    self._scanned(*a)
+                elif kind == "scanfail":
+                    sheet, message = a
+                    if self.tree.exists(sheet):
+                        self.tree.item(sheet, values=("—", "unreadable"),
+                                       tags=("fail",))
+                        self.detail.config(text=message, style="Error.TLabel")
                 elif kind == "result":
                     self._show_result(a)
                 elif kind == "finished":
@@ -572,6 +602,17 @@ class App(ttk.Frame):
         except queue.Empty:
             pass
         self.after(60, self._pump)
+
+    def _scanned(self, sheet: str, path: str, count: int):
+        """A sheet has been looked at. Its preview is ready before Start."""
+        self.previews[sheet] = (path, count)
+        if self.tree.exists(sheet):
+            self.tree.item(sheet, values=(count, "ready"))
+        selection = self.tree.selection()
+        if not selection or selection[0] == sheet:
+            if not selection:
+                self.tree.selection_set(sheet)
+            self._draw_preview(path)
 
     def _preview_ready(self, sheet: str, path: str, count: int):
         """The pieces have been found; they are still being written. Showing it
@@ -632,6 +673,9 @@ class App(ttk.Frame):
     def _row_selected(self, _event=None):
         r = self._selected()
         if not r:
+            selection = self.tree.selection()
+            if selection and selection[0] in self.previews:
+                self._draw_preview(self.previews[selection[0]][0])
             return
         notes = list(r.warnings)
         if not r.ok:

@@ -29,6 +29,13 @@ jobs:
 
       # Same --collect-all reasoning as the Windows job: without it the bundle
       # builds clean and dies on launch importing numpy.
+      # Stamp the build so the log always says exactly which one it came from.
+      - name: Stamp the build
+        run: |
+          echo '"""Written by the build. Do not edit by hand."""' > sheetsplit/_build.py
+          echo "BUILD = \"$(git rev-parse --short HEAD)\"" >> sheetsplit/_build.py
+          cat sheetsplit/_build.py
+
       - name: Build the app
         run: >
           pyinstaller --noconfirm --windowed
