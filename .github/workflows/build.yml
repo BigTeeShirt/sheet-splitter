@@ -1,4 +1,4 @@
-name: Build apps
+name: Build the Mac app
 
 on:
   push:
@@ -6,90 +6,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  windows:
-    runs-on: windows-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller==6.11.1
-
-      # Proves the split itself still works before anything is packaged: a
-      # synthetic sheet with a known number of pieces, plus specks and inside
-      # labels that must NOT become files.
-      - name: Smoke test the splitter
-        run: |
-          python tools/make_test_sheet.py test-sheet/Synthetic-Pattern-M.tif --inches 20x30 --pieces 12
-          python -m sheetsplit.cli test-sheet/Synthetic-Pattern-M.tif --out out
-          python "tools/check_split.py" "out/Synthetic-Pattern-M pieces" 12
-
-      # ⚠ --collect-all for numpy and scipy is load-bearing, not belt-and-braces.
-      # Without it the exe builds clean and then dies on launch with "Importing
-      # the numpy C-extensions failed" -- PyInstaller's analysis misses the
-      # compiled submodules and there is nothing at build time to say so.
-      - name: Build the exe
-        run: >
-          pyinstaller --noconfirm --onefile --windowed
-          --name "Sheet Splitter"
-          --icon sheetsplit/assets/icon.ico
-          --add-data "sheetsplit/assets;assets"
-          --collect-all numpy --collect-all scipy --collect-all PIL
-          --collect-all tkinterdnd2
-          --exclude-module matplotlib --exclude-module pytest
-          --exclude-module pandas --exclude-module IPython
-          sheet_splitter.py
-
-      # Run the real exe on a real desktop, photograph it, and then prove it
-      # actually split something. A green build that ships a broken exe is worse
-      # than a red one -- that is exactly what happened before this step existed.
-      - name: Run the app and prove it works
-        shell: powershell
-        run: |
-          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "resolution unchanged" }
-          $sheet = Resolve-Path "test-sheet\Synthetic-Pattern-M.tif"
-          Start-Process ".\dist\Sheet Splitter.exe" -ArgumentList "--start","`"$sheet`""
-          Start-Sleep -Seconds 40
-
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          $bounds = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
-          $gfx.CopyFromScreen($bounds.X, $bounds.Y, 0, 0, $bmp.Size)
-          New-Item -ItemType Directory -Force -Path shots | Out-Null
-          $bmp.Save("$PWD\shots\app.png", [System.Drawing.Imaging.ImageFormat]::Png)
-          Write-Host "captured $($bounds.Width)x$($bounds.Height)"
-
-          if (-not (Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue)) {
-            throw "the app is not running 40s after launch -- it crashed on startup"
-          }
-          $out = "test-sheet\Synthetic-Pattern-M pieces"   # pieces land beside the sheet
-          if (-not (Test-Path $out)) {
-            Get-Content "$env:LOCALAPPDATA\SheetSplitter\sheet-splitter.log" -ErrorAction SilentlyContinue
-            throw "the app ran but wrote no pieces to $out"
-          }
-          python tools/check_split.py "$out" 12
-          if ($LASTEXITCODE -ne 0) { throw "the exe's own split did not check out" }
-          Get-Content "$env:LOCALAPPDATA\SheetSplitter\sheet-splitter.log" -ErrorAction SilentlyContinue
-          Get-Process "Sheet Splitter" -ErrorAction SilentlyContinue | Stop-Process -Force
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sheet-splitter-windows
-          path: dist/Sheet Splitter.exe
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: screenshot
-          path: shots/app.png
-
   mac:
     runs-on: macos-latest
 
@@ -131,11 +47,11 @@ jobs:
       - name: Run the app and prove it works
         run: |
           sheet="$PWD/test-sheet/Synthetic-Pattern-M.tif"
-          open -a "$PWD/dist/Sheet Splitter.app" --args --start "$sheet"
+          open -a "$PWD/dist/Sheet Splitter.app" --args --start --dest "$PWD/out-app" "$sheet"
           sleep 45
           mkdir -p shots
           screencapture -x shots/app.png || echo "no display to capture"
-          out="$PWD/test-sheet/Synthetic-Pattern-M pieces"   # pieces land beside the sheet
+          out="$PWD/out-app/Synthetic-Pattern-M pieces"
           if [ ! -d "$out" ]; then
             cat "$HOME/Library/Application Support/SheetSplitter/sheet-splitter.log" 2>/dev/null || true
             echo "the app ran but wrote no pieces to $out"

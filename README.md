@@ -10,42 +10,39 @@ it does today.
 
 The design and the reasoning behind it: **[PLAN.md](PLAN.md)**.
 
-## Using it on the print PC
+## Using it
 
-Put `Sheet Splitter.exe` on the desktop. Nothing to install.
+Runs on the Mac at the print station. Put `Sheet Splitter.app` in Applications
+or on the desktop — nothing to install.
 
-1. Double-click it.
-2. **Add sheets…** (several at once is fine) or **Add a folder…** for every TIFF
-   in one go. Dragging sheets onto the icon adds them too. Nothing runs yet.
-3. Press **Start**.
-4. Watch the numbered preview. **Check the piece count** before printing —
-   that is what the preview is for.
-5. **Open folder**, select all, drag into Edge Print.
+1. Open it.
+2. **Choose destination…** — where every sheet's pieces are written. It will not
+   start without one, deliberately: nobody should discover afterwards that a
+   batch went somewhere unexpected.
+3. **Add sheets…**, **Add a folder…**, or drag sheets onto the list. Nothing
+   runs yet.
+4. Press **Start**.
+5. **Check the numbered preview and the piece count.** It appears as soon as the
+   pieces are found, while the cutting is still going, so a wrong count can be
+   caught before the files are written.
+6. **Open folder**, select all, drag into Edge Print.
 
-By default each sheet gets a **`<name> pieces` folder right next to it**, so
-there is nothing to go looking for. Untick *Put pieces beside each sheet* and
-**Choose destination…** to send them all to one folder instead.
-
-⚠ Sheets living in Synology Drive means pieces written beside them **sync back
-up to the NAS** — roughly another sheet's worth per sheet. If that becomes a
-problem, point the destination at a local folder; pieces regenerate in seconds
-from a sheet you still have.
+Each sheet gets its own `<name> pieces` folder inside the destination.
 
 **It leaves nothing behind.** The pieces are the only thing written where you
 can see them. Previews and ink masks are temporary and go when the window
 closes — including after a crash, since it clears its own leftovers on the next
-launch. Settings and a small rolling log live in the standard per-user app
-folder (`%LOCALAPPDATA%\SheetSplitter`, or `~/Library/Application Support/`).
+launch. Settings and a small rolling log live in
+`~/Library/Application Support/SheetSplitter`.
 
 Nothing is auto-deleted, ever.
 
-⚠ If an earlier version left a **`Sheet Pieces` folder** in your home directory
-or on `C:\`, nothing uses it any more — check it for pieces you still want and
-then bin it.
+⚠ A copy downloaded from the releases page is quarantined by macOS, which
+reports it as damaged rather than unsigned. Clear it once:
 
-Windows will warn once that it doesn't recognise the app — **More info → Run
-anyway**. That is what an unsigned exe looks like; a signing certificate costs a
-few hundred a year and isn't worth it for an in-shop tool.
+    xattr -dr com.apple.quarantine "/Applications/Sheet Splitter.app"
+
+A copy handed over locally rather than downloaded doesn't carry the flag.
 
 ### When a split looks wrong
 
@@ -72,34 +69,20 @@ Set **Send diagnostics to** in Settings to a Synology-synced folder and the zip
 lands somewhere it can be read without anyone emailing a file around.
 
 The zip is written to the **Desktop** unless *Send diagnostics to* says
-otherwise. The rolling log it contains lives in the app folder above, and
-records the
+otherwise. The rolling log it contains lives in the app folder above, and records the
 app version, the machine, free disk, each sheet's dimensions, colour mode, DPI
 and compression, and for every sheet how many blobs were found, how many were
 dropped for being too small, how many were inside another piece, and how many
 became files.
 
-## On a Mac
-
-`Sheet Splitter.app` does the same job, with the same destination rules.
-
-⚠ **A copy downloaded from the releases page is quarantined by macOS** and will
-say it's damaged rather than that it's unsigned. Clear it once:
-
-    xattr -dr com.apple.quarantine "/Applications/Sheet Splitter.app"
-
-A copy handed over locally rather than downloaded doesn't carry the flag and
-just opens.
-
 ## Running it from a command line
 
 ```
-python -m sheetsplit.cli sheet.tif [more.tif ...] [--out DIR] [--force]
+python -m sheetsplit.cli sheet.tif [more.tif ...] --out DIR
 ```
 
 Same splitter, no window — for batches, scripting, or working out what a
-setting does. `--out DIR` puts every sheet's pieces under one folder instead of
-beside each sheet.
+setting does.
 
 The app itself takes `--start`, which splits whatever it was given straight away
 rather than waiting for the button. That is what the build uses to prove the
@@ -119,9 +102,14 @@ export: CMYK, zip-compressed, black-outlined pieces, plus the two things that
 must *not* become files — registration specks, and labels printed inside a
 piece.
 
-Pushing to `main` builds the Windows exe on a Windows runner, splits a synthetic
-sheet to prove the exe works, and photographs the running window. All three land
-in the run's artifacts.
+Pushing to `main` builds the app on a macOS runner, makes it split a synthetic
+sheet to prove the packaged bundle actually works, and photographs the running
+window. All three land in the run's artifacts.
+
+The Windows build was dropped on 2026-08-15 when the workflow moved to a Mac
+Mini. The Windows-specific code (DPI awareness, dark title bar, Explorer) is
+still in place and inert, so bringing it back is a job-shaped change rather than
+a rewrite.
 
 - `sheetsplit/core.py` — finding pieces, cropping, the ledger and cleanup
 - `sheetsplit/gui.py` — the window

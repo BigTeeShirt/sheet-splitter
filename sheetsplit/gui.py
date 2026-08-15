@@ -108,7 +108,7 @@ class SettingsDialog(tk.Toplevel):
         ("text_scale", "Text size (%)",
          "100 is normal, 130 is noticeably bigger; applies next time you open it"),
         ("diagnostics_dir", "Send diagnostics to",
-         "a Synology folder puts them where they can be looked at; blank = beside the pieces"),
+         "a Synology folder puts them where they can be looked at; blank = Desktop"),
     ]
 
     def __init__(self, parent, settings: core.Settings, on_save):
@@ -168,10 +168,12 @@ class SettingsDialog(tk.Toplevel):
 
 
 class App(ttk.Frame):
-    def __init__(self, master, argv_paths, autostart=False):
+    def __init__(self, master, argv_paths, autostart=False, dest=None):
         super().__init__(master, padding=(18, 14, 18, 16))
         self.master = master
         self.settings = core.Settings.load()
+        if dest:
+            self.settings.dest_dir = dest
         core.setup_logging()
         # Worth recording: if the native library fails to load, drag-and-drop
         # quietly stops existing and the buttons carry on as if nothing is wrong.
@@ -221,24 +223,12 @@ class App(ttk.Frame):
         self.clear_btn = Button(toolbar, "Clear list", self.clear_list)
         self.clear_btn.pack(side="left", padx=(10, 0))
         self.clear_btn.enable(False)
-        # Pink is the ONE main action, and starting the work is now that action.
-        self.start_btn = Button(toolbar, "Start", self.run, variant="primary")
-        self.start_btn.pack(side="right")
-        self.start_btn.enable(False)
-        self.skip_var = tk.BooleanVar(value=self.settings.skip_existing)
-        theme.Check(toolbar, "Skip sheets already split", variable=self.skip_var,
-                    command=self._skip_changed).pack(side="right", padx=(0, 18))
 
         dest = ttk.Frame(self)
         dest.pack(fill="x", pady=(12, 0))
-        self.beside_var = tk.BooleanVar(value=self.settings.dest_mode == "beside")
-        self.beside_check = theme.Check(dest, "Put pieces beside each sheet",
-                                        variable=self.beside_var,
-                                        command=self._dest_mode_changed)
-        self.beside_check.pack(side="left")
         self.choose_dest_btn = Button(dest, "Choose destination…", self.choose_dest,
                                       pad=(14, 8))
-        self.choose_dest_btn.pack(side="left", padx=(12, 0))
+        self.choose_dest_btn.pack(side="left")
         self.dest_label = ttk.Label(dest, text="", style="Muted.TLabel")
         self.dest_label.pack(side="left", padx=(12, 0))
         Button(dest, "Settings", self.open_settings, pad=(14, 8)).pack(side="right")
@@ -257,6 +247,9 @@ class App(ttk.Frame):
         self.cancel_btn = Button(footer, "Stop", self.cancel)
         self.cancel_btn.pack(side="right", padx=(0, 10))
         self.cancel_btn.enable(False)
+        self.start_btn = Button(footer, "Start", self.run)
+        self.start_btn.pack(side="right", padx=(0, 10))
+        self.start_btn.enable(False)
 
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1000,
                                         style="Brand.Horizontal.TProgressbar")
@@ -348,10 +341,6 @@ class App(ttk.Frame):
 
     # ---------------------------------------------------------------- actions
 
-    def _skip_changed(self):
-        self.settings.skip_existing = self.skip_var.get()
-        self.settings.save()
-
     def choose_files(self):
         paths = filedialog.askopenfilenames(
             title="Choose sheets to split",
@@ -373,7 +362,6 @@ class App(ttk.Frame):
 
     def _settings_saved(self):
         core.setup_logging()
-        self.skip_var.set(self.settings.skip_existing)
         self._set_status("Settings saved.")
 
     def save_diagnostics(self):
@@ -459,7 +447,8 @@ class App(ttk.Frame):
 
     def _refresh_actions(self):
         running = self._running()
-        self.start_btn.enable(bool(self.queue) and not running)
+        self.start_btn.enable(bool(self.queue) and not running
+                              and bool(self.settings.dest_dir))
         self.clear_btn.enable(bool(self.queue) and not running)
         if self.queue:
             self.empty_hint.place_forget()
@@ -481,32 +470,16 @@ class App(ttk.Frame):
         chosen = filedialog.askdirectory(title="Where should the pieces go?")
         if chosen:
             self.settings.dest_dir = chosen
-            self.settings.dest_mode = "folder"
-        elif not self.settings.dest_dir:
-            self.settings.dest_mode = "beside"
-        self.settings.save()
-        self._refresh_dest()
-
-    def _dest_mode_changed(self):
-        if self.beside_var.get():
-            self.settings.dest_mode = "beside"
             self.settings.save()
             self._refresh_dest()
-            return
-        if not self.settings.dest_dir:   # nowhere to put them yet -- ask
-            self.choose_dest()
-            return
-        self.settings.dest_mode = "folder"
-        self.settings.save()
-        self._refresh_dest()
+            self._refresh_actions()
 
     def _refresh_dest(self):
-        beside = self.settings.dest_mode == "beside"
-        self.beside_var.set(beside)
-        self.beside_check.refresh()
+        chosen = bool(self.settings.dest_dir)
         self.dest_label.config(
-            text="a “<name> pieces” folder next to each sheet" if beside
-            else f"→  {self.settings.dest_dir}")
+            text=f"→  {self.settings.dest_dir}" if chosen
+            else "no destination chosen yet — pieces have nowhere to go",
+            style="Muted.TLabel" if chosen else "Warn.TLabel")
 
     def _run(self, sheets: list):
         """Worker thread. One sheet at a time on purpose -- each is gigabytes
@@ -662,13 +635,19 @@ class App(ttk.Frame):
         self._preview_path = path or ""
         self.canvas.delete("all")
         w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if not path or not Path(path).exists() or w < 20 or h < 20:
+        if w < 20 or h < 20:
+            return          # canvas not laid out yet; a resize will call back
+        if not path or not Path(path).exists():
+            core.log.warning("no preview to draw (path=%r)", path)
+            self.canvas.create_text(w // 2, h // 2, fill=theme.MUTED,
+                                    text="no preview for this sheet")
             return
         try:
             img = Image.open(path)
             img.thumbnail((w - 20, h - 20), Image.LANCZOS)
             self._preview_img = ImageTk.PhotoImage(img)
             self.canvas.create_image(w // 2, h // 2, image=self._preview_img)
+            core.log.info("preview drawn: %s", Path(path).name)
         except Exception as exc:
             self.canvas.create_text(w // 2, h // 2, fill=theme.MUTED,
                                     text=f"preview unavailable\n{exc}")
@@ -684,6 +663,11 @@ def main(argv=None) -> int:
     # dragged onto the icon only fill the list; this is for automation, and it
     # is what the build uses to prove the packaged app really splits a sheet.
     autostart = "--start" in argv
+    dest = None
+    if "--dest" in argv:
+        i = argv.index("--dest")
+        dest = argv[i + 1] if i + 1 < len(argv) else None
+        del argv[i:i + 2]
     argv = [a for a in argv if a != "--start"]
 
     theme.set_scale(core.Settings.load().text_scale)
@@ -695,7 +679,7 @@ def main(argv=None) -> int:
     height = max(560, min(880, root.winfo_screenheight() - 120))
     root.geometry(f"{width}x{height}")
     root.minsize(min(940, width), min(600, height))
-    App(root, argv, autostart=autostart)
+    App(root, argv, autostart=autostart, dest=dest)
     _apply_window_chrome(root)
     root.mainloop()
     return 0

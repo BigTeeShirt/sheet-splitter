@@ -55,10 +55,9 @@ class Settings:
     detect_max_px: int = 2000         # long edge of the detection copy
     default_dpi: float = 300.0        # only used if the TIFF doesn't say
     compression: str = "tiff_deflate"
-    skip_existing: bool = True
-    # Where the pieces land. "beside" puts them next to the sheet they came
-    # from; "folder" puts every sheet's pieces under dest_dir.
-    dest_mode: str = "beside"
+    # Where the pieces land. Must be chosen before anything can run -- there is
+    # deliberately no default, so nobody discovers later that a batch went
+    # somewhere they did not expect.
     dest_dir: str = ""
     text_scale: int = 100
     # Point this at a Synology-synced folder and a diagnostics zip lands
@@ -95,15 +94,10 @@ class Settings:
 
 
 def pieces_base(sheet: Path, s: Settings) -> Path:
-    """The directory a sheet's piece folder is created in.
-
-    "beside" puts them next to the sheet they came from, which is what people
-    expect and means nothing has to be found later. ⚠ For sheets living in
-    Synology Drive that does mean the pieces sync back up to the NAS.
-    """
-    if s.dest_mode == "beside":
-        return sheet.parent
-    return Path(s.dest_dir) if s.dest_dir else sheet.parent
+    """The directory a sheet's piece folder is created in."""
+    if not s.dest_dir:
+        raise ValueError("no destination chosen")
+    return Path(s.dest_dir)
 
 
 def app_data_dir() -> Path:
@@ -407,22 +401,19 @@ def build_preview(small: Image.Image, boxes: list, factor: int, out: Path) -> st
 # ------------------------------------------------------- already split?
 
 
-def already_split(sheet: Path, s: Settings) -> Path | None:
-    """Has this sheet already been split, and is the result still newer than it?
+def previous_folder(sheet: Path, s: Settings) -> Path | None:
+    """An earlier split of this sheet, if one is sitting in the destination.
 
-    Asks the filesystem rather than keeping an index of its own. One less file
-    to leave behind, and it cannot disagree with what is actually on disk.
+    Asks the filesystem rather than keeping an index of its own: one less file
+    to leave behind, and it cannot disagree with what is actually there.
     """
-    folder = pieces_base(sheet, s) / f"{sheet.stem} pieces"
-    if not folder.is_dir() or not any(folder.glob("*.tif")):
-        return None
     try:
-        newest = max(p.stat().st_mtime for p in folder.glob("*.tif"))
-        if sheet.stat().st_mtime > newest:
-            return None
-    except OSError:
+        folder = pieces_base(sheet, s) / f"{sheet.stem} pieces"
+    except ValueError:
         return None
-    return folder
+    if folder.is_dir() and any(folder.glob("*.tif")):
+        return folder
+    return None
 
 
 # ---------------------------------------------------------------- splitting
@@ -456,8 +447,8 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
             on_step(text, frac)
 
     try:
-        prior = already_split(sheet, s)
-        if prior and not s.skip_existing:
+        prior = previous_folder(sheet, s)
+        if prior:
             # Deliberately splitting it again: replace the old folder rather than
             # leaving a "(2)" beside it for someone to pick the wrong one from.
             old = prior
@@ -466,13 +457,6 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
                     shutil.rmtree(old)
             except Exception as exc:
                 log.warning("could not replace %s: %s", old, exc)
-        if s.skip_existing and prior:
-            res.ok, res.skipped = True, True
-            res.folder = str(prior)
-            res.message = f"already split — {len(list(prior.glob('*.tif')))} pieces"
-            res.seconds = time.time() - started
-            return res
-
         # One decode, and one only. Everything downstream works from this copy:
         # cropping straight from the file would re-decompress the sheet per piece.
         step("reading sheet", 0.05)

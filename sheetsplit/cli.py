@@ -13,26 +13,21 @@ from . import core
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="sheetsplit", description=__doc__)
     ap.add_argument("paths", nargs="+", help="sheet TIFFs, or folders of them")
-    ap.add_argument("--out", help="put every sheet's pieces under this folder "
-                                  "(default: beside each sheet)")
+    ap.add_argument("--out", required=True,
+                    help="where every sheet's pieces are written")
     ap.add_argument("--margin", type=float, help="inches kept outside the black line")
     ap.add_argument("--min-piece", type=float, help="inches; smaller blobs are ignored")
     ap.add_argument("--threshold", type=int, help="0-255 ink threshold")
-    ap.add_argument("--force", action="store_true", help="re-split sheets already done")
     args = ap.parse_args(argv)
 
     s = core.Settings.load()
-    if args.out:
-        s.dest_mode = "folder"
-        s.dest_dir = str(Path(args.out).expanduser().resolve())
+    s.dest_dir = str(Path(args.out).expanduser().resolve())
     if args.margin is not None:
         s.margin_in = args.margin
     if args.min_piece is not None:
         s.min_piece_in = args.min_piece
     if args.threshold is not None:
         s.ink_threshold = args.threshold
-    if args.force:
-        s.skip_existing = False
 
     core.setup_logging()
 
@@ -46,9 +41,7 @@ def main(argv=None) -> int:
         print(f"[{n}/{len(sheets)}] {sheet.name} ... ", end="", flush=True)
         r = core.split_sheet(sheet, s)
         results.append(r)
-        if r.skipped:
-            print(f"already split, {r.count} pieces")
-        elif r.ok:
+        if r.ok:
             print(f"{r.count} pieces in {r.seconds:.1f}s -> {r.folder}")
         else:
             print(f"FAILED: {r.message}")

@@ -18,6 +18,8 @@ import sys
 import tkinter as tk
 from tkinter import ttk
 
+from PIL import Image, ImageDraw, ImageTk
+
 PINK = "#ec4899"
 PINK_DARK = "#c63c81"
 NEAR_BLACK = "#0a0a0a"
@@ -125,25 +127,21 @@ def apply(root: tk.Misc) -> ttk.Style:
     return style
 
 
-def round_points(x0, y0, x1, y1, r, steps=7):
-    """A true rounded rectangle: points sampled along real quarter circles.
+def slab(width, height, radius, fill, outline, bg, supersample=4):
+    """A rounded rectangle as an image.
 
-    Tk has no rounded rectangle. The obvious trick -- four corner points drawn
-    as a smoothed polygon -- gives a soft, slightly uneven bulge rather than a
-    radius, which is why these did not look like the buttons in the apps.
+    ⚠ Drawn rather than made from canvas primitives on purpose. Tk's canvas has
+    no antialiasing, so a polygon traced round a 7px radius rasterises into a
+    single 45-degree cut -- the corners came out chamfered, not rounded. Pillow
+    draws it at 4x and downsamples, which is the only way to get a clean curve.
     """
-    pts = []
-    corners = (
-        (x1 - r, y0 + r, -90, 0),    # top right
-        (x1 - r, y1 - r, 0, 90),     # bottom right
-        (x0 + r, y1 - r, 90, 180),   # bottom left
-        (x0 + r, y0 + r, 180, 270),  # top left
-    )
-    for cx, cy, start, end in corners:
-        for i in range(steps + 1):
-            angle = math.radians(start + (end - start) * i / steps)
-            pts += [cx + r * math.cos(angle), cy + r * math.sin(angle)]
-    return pts
+    ss = supersample
+    big = Image.new("RGB", (width * ss, height * ss), bg)
+    draw = ImageDraw.Draw(big)
+    draw.rounded_rectangle(
+        [ss // 2, ss // 2, width * ss - ss // 2 - 1, height * ss - ss // 2 - 1],
+        radius=radius * ss, fill=fill, outline=outline, width=ss)
+    return ImageTk.PhotoImage(big.resize((width, height), Image.LANCZOS))
 
 
 class Check(tk.Canvas):
@@ -160,6 +158,7 @@ class Check(tk.Canvas):
         self.command, self.text = command, text
         self._font = font()
         self._hover = False
+        self._faces, self._bg = {}, bg
 
         probe = tk.Label(parent, text=text, font=self._font)
         tw, th = probe.winfo_reqwidth(), probe.winfo_reqheight()
@@ -180,8 +179,11 @@ class Check(tk.Canvas):
         on = bool(self.var.get())
         fill = PINK if on else SUNKEN
         box = self.BOX
-        self.create_polygon(round_points(1, top, box, top + box - 1, px(4)),
-                            fill=fill, outline=PINK if on else BORDER, width=1)
+        key = (fill, on)
+        if key not in self._faces:
+            self._faces[key] = slab(box, box, px(4), fill,
+                                    PINK if on else BORDER, self._bg)
+        self.create_image(1, top, anchor="nw", image=self._faces[key])
         if on:
             # ⚠ near-black on the pink, like everything else that sits on it
             self.create_line(box * 0.27, top + box * 0.52,
@@ -221,6 +223,7 @@ class Button(tk.Canvas):
                  pad=(18, 11), radius=7, bg=WINDOW):
         self.variant, self.canvas_bg = variant, bg
         self.radius = px(radius)
+        self._faces = {}
         # Both variants are semibold in button.tsx; Tk has no semibold, so bold.
         self._font = font(weight="bold")
         self.text, self.command = text, command
@@ -255,8 +258,11 @@ class Button(tk.Canvas):
         self.delete("all")
         w, h = int(self["width"]), int(self["height"])
         fill, outline, ink = self._colours()
-        self.create_polygon(round_points(1, 1, w - 1, h - 1, self.radius),
-                            fill=fill, outline=outline, width=1)
+        key = (fill, outline)
+        if key not in self._faces:
+            self._faces[key] = slab(w, h, self.radius, fill, outline,
+                                    self.canvas_bg)
+        self.create_image(0, 0, anchor="nw", image=self._faces[key])
         self.create_text(w // 2, h // 2, text=self.text, fill=ink,
                          font=self._font)
 
