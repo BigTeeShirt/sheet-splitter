@@ -2,5 +2,5 @@
 
 from ._build import BUILD
 
-__version__ = "1.7.4"
+__version__ = "1.7.5"
 __build__ = BUILD

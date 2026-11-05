@@ -360,9 +360,52 @@ def _pooled_ink(arr: np.ndarray, factor: int) -> np.ndarray:
     return ink_map(out)
 
 
+def _blank_neighbours(arr: np.ndarray, box: tuple, piece_map: np.ndarray,
+                      factor: int, index: int):
+    """The piece's crop, with any part of another piece inside it set to blank
+    media. Returns (crop, pixels blanked).
+
+    Pieces nest closer than the margin, so a plain rectangle catches the edge of
+    the next piece's outline -- which would print, and confuse the laser.
+
+    ⚠ Blanks what belongs to ANOTHER piece, never "everything not this piece":
+    the piece map is coarse (one sample per factor x factor block), and keeping
+    only this piece's samples would risk shaving its own edge. Neighbours are
+    grown by one sample to catch their faint anti-aliased edge, but a sample
+    that is this piece's is never blanked.
+    """
+    x0, y0, x1, y1 = box
+    crop = arr[y0:y1, x0:x1]
+    sy0, sx0 = y0 // factor, x0 // factor
+    sy1, sx1 = -(-y1 // factor), -(-x1 // factor)
+    # One sample of context each side, so the growing sees neighbours just out of frame.
+    py0, px0 = max(0, sy0 - 1), max(0, sx0 - 1)
+    region = piece_map[py0:sy1 + 1, px0:sx1 + 1]
+    others = ndimage.binary_dilation((region != 0) & (region != index),
+                                     structure=np.ones((3, 3), bool))
+    others &= region != index
+    if not others.any():
+        return crop, 0
+    rows = np.arange(y0, y1) // factor - py0
+    cols = np.arange(x0, x1) // factor - px0
+    blank = others[rows[:, None], cols[None, :]]
+    count = int(blank.sum())
+    if not count:
+        return crop, 0
+    crop = crop.copy()
+    # Blank media: zero ink in CMYK, white in greyscale and RGB.
+    cmyk = crop.ndim == 3 and crop.shape[2] >= 4
+    if cmyk:
+        crop[blank, :4] = 0
+    else:
+        crop[blank] = 255
+    return crop, count
+
+
 def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
     """Return (boxes in full-resolution pixels, the small array detection ran on,
-    the detection scale factor).
+    the detection scale factor, the ink mask, and a piece map: the mask's shape,
+    holding each sample's piece number -- 1 is boxes[0] -- or 0 for no piece).
 
     Downsampling is a stride rather than a resize -- no copy, no filtering, and
     the pieces are thousands of pixels across so nothing is lost.
@@ -384,7 +427,7 @@ def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
 
     min_px = (s.min_piece_in * min(dpi)) / factor
     boxes, too_small = [], 0
-    for sl in ndimage.find_objects(labels):
+    for label, sl in enumerate(ndimage.find_objects(labels), 1):
         if sl is None:
             continue
         ys, xs = sl
@@ -392,7 +435,8 @@ def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
         if max(w, h) < min_px:
             too_small += 1
             continue
-        boxes.append((xs.start, ys.start, xs.stop, ys.stop))
+        # The label rides along as a fifth value; the helpers only read the box.
+        boxes.append((xs.start, ys.start, xs.stop, ys.stop, label))
 
     kept = _drop_contained(boxes)
     # Logged in detail because this is the first thing to look at when a split
@@ -414,7 +458,10 @@ def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
         )
         for b in boxes
     ]
-    return full, small, factor, mask
+    renumber = np.zeros(n + 1, np.int32)
+    for i, b in enumerate(boxes, 1):
+        renumber[b[4]] = i
+    return full, small, factor, mask, renumber[labels]
 
 
 def as_pil(arr: np.ndarray) -> Image.Image:
@@ -553,7 +600,7 @@ def scan_sheet(sheet: Path, s: Settings):
     """
     started = time.time()
     arr, dpi, _ = read_sheet(sheet, s)
-    boxes, small, factor, mask = detect_pieces(arr, s, dpi)
+    boxes, small, factor, mask, _ = detect_pieces(arr, s, dpi)
     save_mask(mask, mask_path(work_dir(), str(sheet)))
     preview = build_preview(small, boxes, factor,
                             work_dir() / PREVIEW_DIRNAME / f"{sheet.stem}.png")
@@ -607,7 +654,7 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
                  time.time() - started)
 
         step("finding pieces", 0.35)
-        boxes, small, factor, mask = detect_pieces(arr, s, dpi)
+        boxes, small, factor, mask, piece_map = detect_pieces(arr, s, dpi)
         save_mask(mask, mask_path(work_dir(), str(sheet)))
 
         # Drawn now rather than at the end: finding the pieces is quick, writing
@@ -629,12 +676,17 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
         folder.mkdir(parents=True, exist_ok=True)
         pad = max(2, len(str(len(boxes))))
         mx, my = round(s.margin_in * dpi[0]), round(s.margin_in * dpi[1])
+        trimmed = 0
 
         for i, b in enumerate(boxes, 1):
             box = (max(0, b[0] - mx), max(0, b[1] - my),
                    min(width, b[2] + mx), min(height, b[3] + my))
             out = folder / f"{sheet.stem}_{i:0{pad}d}.tif"
-            piece = as_pil(arr[box[1]:box[3], box[0]:box[2]])
+            crop, blanked = _blank_neighbours(arr, box, piece_map, factor, i)
+            if blanked:
+                trimmed += 1
+                log.info("piece %s: blanked %s px of neighbouring pieces", i, blanked)
+            piece = as_pil(crop)
             save_kwargs = dict(compression=s.compression, dpi=dpi)
             if icc:
                 save_kwargs["icc_profile"] = icc
@@ -655,7 +707,8 @@ def split_sheet(sheet: Path, s: Settings, on_step=None, cancel=None,
         res.ok = True
         res.seconds = time.time() - started
 
-        log.info("%s: %s pieces in %.1fs", sheet.name, res.count, res.seconds)
+        log.info("%s: %s pieces in %.1fs, %s had bits of a neighbour blanked",
+                 sheet.name, res.count, res.seconds, trimmed)
         return res
 
     except Cancelled:
