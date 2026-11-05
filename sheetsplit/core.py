@@ -19,6 +19,7 @@ import atexit
 import tempfile
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -328,6 +329,37 @@ def _drop_contained(boxes: list) -> list:
     return keep
 
 
+def _pooled_ink(arr: np.ndarray, factor: int) -> np.ndarray:
+    """The ink map at 1/factor scale, where each sample is the MOST ink in its
+    factor x factor block.
+
+    ⚠ Not a stride. Striding looks at one pixel in factor*factor and steps
+    straight over a thin outline: HoodZip_M_MNRSports.tif (Nov 2026, white
+    pieces with only a hairline outline, factor 18) broke into 47 fragments
+    instead of 16 pieces. Taking the block's darkest pixel can't miss a line.
+    Strips run on every core; ~1s for a 2GB sheet.
+    """
+    height, width = arr.shape[:2]
+    if arr.ndim == 3:
+        arr = arr[:, :, :4] if arr.shape[2] >= 4 else arr[:, :, :3]
+    # CMYK counts ink upward from zero; greyscale and RGB count it downward.
+    cmyk = arr.ndim == 3 and arr.shape[2] == 4
+    reduce = np.maximum if cmyk else np.minimum
+    band = factor * 32
+    col_starts = np.arange(0, width, factor)
+    out = np.empty((-(-height // factor), len(col_starts)) + arr.shape[2:], arr.dtype)
+
+    def strip(y0):
+        a = arr[y0:y0 + band]
+        rows = reduce.reduceat(a, np.arange(0, a.shape[0], factor), axis=0)
+        out[y0 // factor:y0 // factor + rows.shape[0]] = reduce.reduceat(
+            rows, col_starts, axis=1)
+
+    with ThreadPoolExecutor(os.cpu_count() or 4) as pool:
+        list(pool.map(strip, range(0, height, band)))
+    return ink_map(out)
+
+
 def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
     """Return (boxes in full-resolution pixels, the small array detection ran on,
     the detection scale factor).
@@ -339,11 +371,14 @@ def detect_pieces(arr: np.ndarray, s: Settings, dpi: tuple):
     factor = max(1, math.ceil(max(width, height) / max(200, s.detect_max_px)))
     small = arr[::factor, ::factor]
 
-    mask = ink_map(small) > s.ink_threshold
+    mask = _pooled_ink(arr, factor) > s.ink_threshold
     if s.close_px > 0:
         mask = ndimage.binary_closing(
             mask, structure=np.ones((3, 3), bool), iterations=s.close_px
         )
+    # A white piece is nothing but its outline. Filling the closed outline makes
+    # it one solid blob, so loose bits of art inside can't become pieces.
+    mask = ndimage.binary_fill_holes(mask)
 
     labels, n = ndimage.label(mask, structure=np.ones((3, 3), bool))
 
